@@ -1,0 +1,26 @@
+{
+  "archive_md5": {
+    "seisforge_catalogues.zip": "5f4850c4e313876ce74016f07d21a49b",
+    "seisforge_panel.zip": "0665486a527779c0256b98740e2cfc6a",
+    "seisforge_verdicts.zip": "b476d5396c39361febc632c63364f3a1"
+  },
+  "derived_sha256": {
+    "japan_panel.csv": "842b1cc4baf60858c1f8ff7ed49b4ac1a045f395efcfb5fe5bf87f5bf4d5508b",
+    "japan_verdicts.csv": "e219024e0a629e6a5e98734409cf114e2734569de527fb3b5584e12f63c21b6d"
+  },
+  "members": [
+    "panel/bench/japan_forearc/panel/sample_200.csv",
+    "catalogues/bench/japan_forearc/quality/association_features_all.csv",
+    "verdicts/verdicts_japan_forearc.csv"
+  ],
+  "source": "https://doi.org/10.5281/zenodo.22059219",
+  "source_authors": [
+    "Lingsen Meng",
+    "Hui Huang",
+    "Jinzhi Ma",
+    "Yang Ma"
+  ],
+  "source_license": "CC BY 4.0",
+  "source_version": "1.1.0",
+  "waveforms_included": false
+}

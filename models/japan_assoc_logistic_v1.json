@@ -1,0 +1,104 @@
+{
+  "algorithm_version": "scikit-learn 1.9.0",
+  "claim": "Research-only human confirmability; not earthquake existence, hazard or forecast probability",
+  "class_counts": {
+    "confirmed": 139,
+    "rejected": 25,
+    "unresolved": 36
+  },
+  "coefficient": [
+    0.3133574366131642,
+    1.2809480652230156,
+    0.04362962204177749,
+    -0.36258973244368625,
+    0.33487863529284234,
+    0.49610327101405144,
+    0.22392996298360013
+  ],
+  "evaluation": {
+    "brier_oof": 0.10181558840817871,
+    "cv": "5-fold stratified random CV; preprocessing fitted in each training fold",
+    "ece5_oof_unweighted": 0.031420169680725925,
+    "holdout_limit": "Same Japan panel and author-reviewers; not a new region or independent-panel test",
+    "roc_auc_oof": 0.8497841726618705,
+    "roc_auc_oof_bootstrap_95pct": [
+      0.7707942006327027,
+      0.9118126144688643
+    ]
+  },
+  "features": [
+    "n_pha_total",
+    "n_sta",
+    "moveout_rms",
+    "az_gap",
+    "sec_az_gap",
+    "dist_nearest_sta_km",
+    "mag"
+  ],
+  "id": "szl-japan-confirmability-v1",
+  "intercept": 2.6636120987398733,
+  "mean": [
+    3.4932012065653684,
+    3.1541393134885447,
+    0.4848813748757882,
+    106.93963414634148,
+    51.90792682926831,
+    15.535579268292683,
+    1.0373170731707313
+  ],
+  "model_kind": "L2 logistic regression on seven association features",
+  "n_panel": 200,
+  "n_train": 164,
+  "region": "japan_forearc",
+  "scale": [
+    0.8338225323784082,
+    0.80710425001319,
+    0.17472423912589824,
+    67.25225684752643,
+    25.136454396044044,
+    11.490679264126804,
+    0.9697265754695608
+  ],
+  "source_doi": "https://doi.org/10.5281/zenodo.22059219",
+  "source_sha256": {
+    "japan_panel.csv": "842b1cc4baf60858c1f8ff7ed49b4ac1a045f395efcfb5fe5bf87f5bf4d5508b",
+    "japan_verdicts.csv": "e219024e0a629e6a5e98734409cf114e2734569de527fb3b5584e12f63c21b6d"
+  },
+  "source_version": "1.1.0",
+  "target": "four author-reviewer plurality: confirmed vs rejected; uncertain or tied excluded",
+  "three_feature_baseline": {
+    "brier_oof": 0.10060088070765662,
+    "cv": "5-fold stratified random CV; preprocessing fitted in each training fold",
+    "ece5_oof_unweighted": 0.012329236914273827,
+    "holdout_limit": "Same Japan panel and author-reviewers; not a new region or independent-panel test",
+    "roc_auc_oof": 0.8385611510791366,
+    "roc_auc_oof_bootstrap_95pct": [
+      0.7522119647938588,
+      0.9113317435344553
+    ]
+  },
+  "training_max": [
+    5.365976015021851,
+    5.081404364984463,
+    0.8713438419528142,
+    305.2,
+    121.20000000000002,
+    76.036,
+    5.26
+  ],
+  "training_min": [
+    1.9459101490553132,
+    1.6094379124341003,
+    0.0826377637645162,
+    16.100000000000023,
+    9.300000000000011,
+    0.717,
+    -1.08
+  ],
+  "training_seed": 20260924,
+  "transforms": {
+    "n_pha_total": "log1p",
+    "n_sta": "log1p"
+  },
+  "waveform_review": "unavailable in pinned archive"
+}
