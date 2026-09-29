@@ -65,13 +65,13 @@ function publishedDetail(data) {
   const votes = data.published_verdicts.map(v => `<li><strong>${esc(v.reviewer)}</strong>${badge(v.verdict)}</li>`).join("");
   const meta = Object.entries(data.metadata).map(([name,value]) => field(name,value)).join("");
   const features = Object.entries(data.features).map(([name,value]) => field(name,value)).join("");
-  return `<h2>Published case ${esc(data.event_id)}</h2><p>${badge(data.published_consensus)} &nbsp; Four source-panel verdicts · ${esc(data.catalogue)}</p><p class="warning">The pinned archive does not include continuous waveforms. This record can be inspected, but it cannot receive a new blind verdict here. The displayed model score is a full-panel fit; the evaluation AUC uses out-of-fold predictions.</p><h3>Published votes</h3><ul class="review-list">${votes}</ul><h3>Catalogue metadata</h3><div class="detail-grid">${meta}</div><h3>Seven association features</h3><div class="detail-grid">${features}</div><h3>Model readout</h3><p>${data.confirmability_score == null ? esc(data.score_status) : `${cleanNumber(data.confirmability_score,3)} · ${esc(data.score_status)} · Japan panel only`}</p><a href="${esc(data.source_url)}" target="_blank" rel="noopener noreferrer">View pinned source ↗</a>`;
+  return `<h2>Published case ${esc(data.event_id)}</h2><p>${badge(data.published_consensus)} &nbsp; Four source-panel verdicts · ${esc(data.catalogue)}</p><p class="warning">The pinned archive does not include continuous waveforms. This record can be inspected, but it cannot receive a new blind verdict here. The displayed model score is a full-panel fit; the evaluation AUC uses out-of-fold predictions.</p><h3>Published votes</h3><ul class="review-list">${votes}</ul><h3>Catalogue metadata</h3><div class="detail-grid">${meta}</div><h3>Seven association features</h3><div class="detail-grid">${features}</div><h3>Model readout</h3><p>${data.confirmability_score == null ? esc(data.score_status) : `${cleanNumber(data.confirmability_score,3)} · ${esc(data.score_status)} · Japan panel only`}</p><a href="${esc(data.source_url)}" target="_blank" rel="noopener noreferrer">View pinned source →</a>`;
 }
 
 function plotTrace(samples){
   const width=480,height=72,low=Math.min(...samples),high=Math.max(...samples),span=high-low||1;
   const points=samples.map((value,index)=>`${(index/(samples.length-1)*width).toFixed(1)},${(height-6-(value-low)/span*(height-12)).toFixed(1)}`).join(" ");
-  return `<svg class="trace" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Waveform trace"><polyline points="${points}" fill="none" stroke="#3d70dd" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`;
+  return `<svg class="trace" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Waveform trace"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 function importedDetail(data){

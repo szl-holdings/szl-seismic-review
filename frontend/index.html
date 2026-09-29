@@ -1,22 +1,23 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f8fc">
   <title>SZL Seismic Review</title>
+  <link rel="stylesheet" href="/assets/kanchay/kanchay.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
+  <a class="skip-link" href="#overview">Skip to content</a>
   <div class="shell">
     <aside class="sidebar" aria-label="Primary navigation">
       <a class="brand" href="/" aria-label="SZL Seismic Review home"><span class="brand-mark">SZL</span><span>SEISMIC<br><strong>REVIEW</strong></span></a>
       <p class="nav-label">WORKSPACE</p>
-      <a class="nav-item active" href="#overview">◫ <span>Overview</span></a>
-      <a class="nav-item" href="#catalogue">≋ <span>Catalogue</span></a>
-      <a class="nav-item" href="#method">◈ <span>Method &amp; evidence</span></a>
-      <a class="nav-item" href="#operator">⊕ <span>Operator tools</span></a>
+      <a class="nav-item active" href="#overview"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg><span>Overview</span></a>
+      <a class="nav-item" href="#catalogue"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/></svg><span>Catalogue</span></a>
+      <a class="nav-item" href="#method"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m9 15 2 2 4-4"/></svg><span>Method &amp; evidence</span></a>
+      <a class="nav-item" href="#operator"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg><span>Operator tools</span></a>
       <div class="sidebar-bottom">
         <span class="dot"></span><span id="source-state">Loading source…</span>
         <p>Human confirmability research<br>Japan forearc pilot</p>
@@ -34,7 +35,7 @@
           <p class="eyebrow">CATALOGUE QUALITY · RESEARCH PILOT</p>
           <h1>See the evidence behind<br><em>every detection.</em></h1>
           <p class="hero-copy">A human-centred review desk for machine earthquake catalogues. Scores estimate expert confirmability within a pinned Japan panel; waveform review stays closed until real traces are attached.</p>
-          <div class="hero-actions"><a href="#catalogue" class="button primary">Explore detections <span>↗</span></a><a href="#method" class="button ghost">Read the method <span>→</span></a></div>
+          <div class="hero-actions"><a href="#catalogue" class="button primary">Explore detections <span>→</span></a><a href="#method" class="button ghost">Read the method <span>→</span></a></div>
         </div>
         <div class="hero-graphic" aria-hidden="true">
           <div class="wave-label">EVIDENCE SIGNAL / 01</div>
@@ -51,23 +52,23 @@
       </section>
 
       <section class="section" id="catalogue">
-        <div class="section-head"><div><p class="eyebrow">REVIEW DESK / 01</p><h2>Detection catalogue</h2><p>Published cases are attributed research records. Imported cases remain blind until an operator locks a waveform verdict.</p></div><div class="section-controls"><label class="sr-only" for="catalogue-filter">Catalogue</label><select id="catalogue-filter"><option value="">All catalogues</option></select><button class="button ghost small" id="refresh-button" type="button">Refresh ↻</button></div></div>
+        <div class="section-head"><div><p class="eyebrow">REVIEW DESK / 01</p><h2>Detection catalogue</h2><p>Published cases are attributed research records. Imported cases remain blind until an operator locks a waveform verdict.</p></div><div class="section-controls"><label class="sr-only" for="catalogue-filter">Catalogue</label><select id="catalogue-filter"><option value="">All catalogues</option></select><button class="button ghost small" id="refresh-button" type="button">Refresh</button></div></div>
         <div class="table-wrap"><table><thead><tr><th>RECORD</th><th>ORIGIN</th><th>REGION / CATALOGUE</th><th>PANEL VERDICT</th><th>MODEL READOUT</th><th>WAVEFORM</th><th></th></tr></thead><tbody id="detection-rows"><tr><td colspan="7" class="empty">Loading verified records…</td></tr></tbody></table></div>
-        <div class="table-foot"><span id="page-status">—</span><div><button id="prev-button" class="pager" type="button" disabled>← Previous</button><button id="next-button" class="pager" type="button" disabled>Next →</button></div></div>
+        <div class="table-foot"><span id="page-status">—</span><div><button id="prev-button" class="pager" type="button" disabled>Previous</button><button id="next-button" class="pager" type="button" disabled>Next →</button></div></div>
       </section>
 
       <section class="two-col" id="method">
         <article class="panel method-panel"><p class="eyebrow">MODEL CARD / 02</p><h2>Seven signals, one careful claim.</h2><p>The model uses phase count, station count, move-out residual, two azimuth gaps, nearest-station distance and magnitude. It learns the author panel’s <strong>confirmability verdict</strong> for this Japan sample.</p><div class="stat-line"><span>Training cases</span><strong id="train-count">—</strong></div><div class="stat-line"><span>Out-of-fold Brier score</span><strong id="brier-value">—</strong></div><div class="stat-line"><span>Geographic scope</span><strong>NE Japan forearc</strong></div><p class="note">A score is not the probability that an earthquake physically occurred, and this sample does not validate a new region or independent reviewers.</p></article>
-        <article class="panel evidence-panel"><p class="eyebrow">SOURCE CHAIN / 03</p><h2>Reproduce the trail.</h2><div class="source-step"><span>01</span><div><strong>Paper</strong><p>EarthArXiv preprint by Meng, Huang, Ma and Ma.</p><a id="paper-link" target="_blank" rel="noopener noreferrer">View preprint ↗</a></div></div><div class="source-step"><span>02</span><div><strong>Pinned data</strong><p>Zenodo version 1.1.0, CC BY 4.0; archive and derived checksums are retained.</p><a id="source-link" target="_blank" rel="noopener noreferrer">View data record ↗</a></div></div><div class="source-step"><span>03</span><div><strong>Local fit</strong><p>Five-fold cross-validation, seven-feature logistic baseline, trained from pinned panel verdicts.</p></div></div></article>
+        <article class="panel evidence-panel"><p class="eyebrow">SOURCE CHAIN / 03</p><h2>Reproduce the trail.</h2><div class="source-step"><span>01</span><div><strong>Paper</strong><p>EarthArXiv preprint by Meng, Huang, Ma and Ma.</p><a id="paper-link" target="_blank" rel="noopener noreferrer">View preprint →</a></div></div><div class="source-step"><span>02</span><div><strong>Pinned data</strong><p>Zenodo version 1.1.0, CC BY 4.0; archive and derived checksums are retained.</p><a id="source-link" target="_blank" rel="noopener noreferrer">View data record →</a></div></div><div class="source-step"><span>03</span><div><strong>Local fit</strong><p>Five-fold cross-validation, seven-feature logistic baseline, trained from pinned panel verdicts.</p></div></div></article>
       </section>
 
-      <section class="section operator" id="operator"><div class="section-head"><div><p class="eyebrow">OPERATOR / 04</p><h2>Bring your own catalogue.</h2><p>Import feature-complete CSV records for a research queue. Fresh blind reviews require five operator-supplied station traces per event and an authorized operator.</p></div><span class="pill" id="write-state">Read only</span></div><div class="operator-grid"><div class="operator-card"><h3>Import CSV</h3><label for="operator-token">Operator token</label><input id="operator-token" type="password" autocomplete="off" placeholder="Held only in this page memory"><label for="import-catalogue">Catalogue name</label><input id="import-catalogue" placeholder="Example: local-pipeline-2026"><label for="import-region">Region</label><input id="import-region" value="japan_forearc"><label for="import-file">CSV with event_id and seven features</label><input id="import-file" type="file" accept=".csv,text/csv"><button class="button primary" id="import-button" type="button" disabled>Import catalogue</button><p class="form-feedback" id="import-feedback" role="status"></p></div><div class="operator-card guide"><h3>Required fields</h3><code>event_id, n_pha_total, n_sta, moveout_rms, az_gap, sec_az_gap, dist_nearest_sta_km, mag</code><p>Optional columns: <code>time, lat, lon, dep</code>. Angles use degrees; nearest-station distance uses kilometres. Unknown-region and out-of-support scores abstain.</p><h3>Review gate</h3><p>Five blinded station traces, sample rate, and a waveform source reference must be attached through the API before a reviewer can choose confirmed, unresolved or rejected. The service checks trace shape, not authenticity. The source archive has no continuous waveforms.</p><a href="/api/docs" target="_blank" rel="noopener noreferrer">Open API guide ↗</a></div></div></section>
+      <section class="section operator" id="operator"><div class="section-head"><div><p class="eyebrow">OPERATOR / 04</p><h2>Bring your own catalogue.</h2><p>Import feature-complete CSV records for a research queue. Fresh blind reviews require five operator-supplied station traces per event and an authorized operator.</p></div><span class="pill" id="write-state">Read only</span></div><div class="operator-grid"><div class="operator-card"><h3>Import CSV</h3><label for="operator-token">Operator token</label><input id="operator-token" type="password" autocomplete="off" placeholder="Held only in this page memory"><label for="import-catalogue">Catalogue name</label><input id="import-catalogue" placeholder="Example: local-pipeline-2026"><label for="import-region">Region</label><input id="import-region" value="japan_forearc"><label for="import-file">CSV with event_id and seven features</label><input id="import-file" type="file" accept=".csv,text/csv"><button class="button primary" id="import-button" type="button" disabled>Import catalogue</button><p class="form-feedback" id="import-feedback" role="status"></p></div><div class="operator-card guide"><h3>Required fields</h3><code>event_id, n_pha_total, n_sta, moveout_rms, az_gap, sec_az_gap, dist_nearest_sta_km, mag</code><p>Optional columns: <code>time, lat, lon, dep</code>. Angles use degrees; nearest-station distance uses kilometres. Unknown-region and out-of-support scores abstain.</p><h3>Review gate</h3><p>Five blinded station traces, sample rate, and a waveform source reference must be attached through the API before a reviewer can choose confirmed, unresolved or rejected. The service checks trace shape, not authenticity. The source archive has no continuous waveforms.</p><a href="/api/docs" target="_blank" rel="noopener noreferrer">Open API guide →</a></div></div></section>
 
       <footer>© SZL Holdings · Research software · Source and model claims are versioned.</footer>
     </main>
   </div>
 
   <div id="drawer-backdrop" class="drawer-backdrop" hidden></div>
-  <aside id="detail-drawer" class="drawer" aria-label="Detection detail" aria-hidden="true"><div class="drawer-top"><span class="eyebrow">DETECTION EVIDENCE</span><button id="close-drawer" class="icon-button" aria-label="Close detection detail">×</button></div><div id="detail-content" class="drawer-body"></div></aside>
+  <aside id="detail-drawer" class="drawer" aria-label="Detection detail" aria-hidden="true"><div class="drawer-top"><span class="eyebrow">DETECTION EVIDENCE</span><button id="close-drawer" class="icon-button" aria-label="Close detection detail">✕</button></div><div id="detail-content" class="drawer-body"></div></aside>
 </body>
 </html>
