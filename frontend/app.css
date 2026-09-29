@@ -167,7 +167,7 @@ footer{color:var(--text-ghost);font-size:var(--text-xs);padding:10px 0}
 [data-surface="light"] .btn-primary,[data-surface="light"] .btn-primary:hover{background:var(--accent-press);border-color:var(--accent-press);color:var(--accent-ink)}
 [data-surface="light"] .btn-primary:hover{box-shadow:0 0 0 1px var(--accent-press)}
 
-@media (pointer:coarse){.nav-item,.row-button,.pager,.review-actions button,.drawer input,.brand{min-height:var(--target-size-coarse)}}
+@media (pointer:coarse){.nav-item,.row-button,.pager,.review-actions button,.drawer input,.brand{min-height:var(--target-size-coarse)}.source-step a,.guide a,.drawer-body a{display:inline-flex;align-items:center;min-height:var(--target-size-coarse)}}
 @media (forced-colors:active){.badge::before{forced-color-adjust:none;background:CanvasText}.nav-item.active{outline:var(--border-hairline) solid CanvasText}}
 
 @media(max-width:1080px){.hero{grid-template-columns:1fr}.hero-graphic.code{min-height:170px}.hero-graphic svg{height:100px}.metrics{grid-template-columns:repeat(2,1fr)}}
