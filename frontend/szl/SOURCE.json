@@ -1,0 +1,29 @@
+{
+  "name": "szl-kanchay",
+  "version": "1.1.0",
+  "base": "szl-holdings/szl-brand kit/tokens/szl-design-system.css (KANCHAY v1.1.0, founder-approved)",
+  "layers": {
+    "szl-console.css": "1.0.0 (operator console, additive)"
+  },
+  "source_commit": "168c53a0252b55243e3fa75fa5e3c743b8efb806",
+  "license": {
+    "code": "Apache-2.0",
+    "brand_assets": "CC BY 4.0"
+  },
+  "sha256": {
+    "DESIGN_DIRECTION.md": "6fa5572b3bdeb800e353c9b28bd1eea7cbf822fcfe41bc6eba19e1d3e8f57fc3",
+    "szl-console.css": "7ef6a0908302c6c2d83d637d1aa4fcac36ae2740a5c8e9cac0608c3cdb2c9928",
+    "szl-design-system.css": "7e341334b45cdcccceff05a670cc7381f0c0961c397dbb092b5f553f61ac5604",
+    "logos/LOGO_USAGE.md": "607e74374f955a36d1ec32873cc9042262b55c4e8d029c5e6dc20ccc1e93a97e",
+    "logos/szl_favicon.svg": "2d9f450cc652d1d6969e4e39a71c8a631d06aa8145411e868a59daf93b640bed",
+    "logos/szl_favicon_180.png": "75457c07144e90dcc23e3180e83a47e21cf20be3e7eb163ea41b4fed8c6c1b08",
+    "logos/szl_favicon_32.png": "a3413a0dfc1516c11a668e4c945d140bb1f9299f91ddf1e224108645802506ed",
+    "logos/szl_favicon_512.png": "7b7a0639da806c1a6f2209f14d51db9dbb92fa88ef93a43ee3edfada90b49b9b",
+    "logos/szl_favicon_square.svg": "75af77615f9bb9172a512ca3311eceb05abda7f9d0269627c0743fc0041e77e3",
+    "logos/szl_logo_horizontal.svg": "b33149dd783236371859129b0a85770c9b2dafc345c9f8127f5ba73afbdca6cf",
+    "logos/szl_logo_mono_navy.svg": "cbd4e5a293b0b64db1f39638dd65ecfab81e98c2921f7ce51e3c1fae4d893da5",
+    "logos/szl_logo_mono_white.svg": "9cf206de4467ccf8d15affb1cac329309686a7b17b5410f69aa04a13bdf1fb1c",
+    "logos/szl_logo_primary.svg": "2d780c748dccf7800e2ed6949a808565ba23be48d3d8d1d92b01bf3cf6c7d205",
+    "logos/szl_logo_transparent.svg": "478026fa4d52e655c8a78a3db6877b18264dd93308d0f54447e961dc7b5cc861"
+  }
+}
