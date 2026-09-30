@@ -116,7 +116,8 @@ async function importCatalogue(){
   try{
     const query=new URLSearchParams({catalogue,region});
     const result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...headers(),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
-    feedback.textContent=`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required.`;
+    const hash=document.createElement("code");hash.textContent=result.source_sha256;
+    feedback.replaceChildren(`Imported ${result.imported} records. Source SHA-256: `,hash,". Waveform attachment remains required.");
     feedback.classList.remove("error");state.offset=0;await loadSummary();await loadCatalogue();
   }catch(error){feedback.textContent=error.message;feedback.classList.add("error");}
 }
