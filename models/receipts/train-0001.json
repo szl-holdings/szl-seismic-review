@@ -1,0 +1,40 @@
+{
+  "base_revision": "NONE_TABULAR_FIT",
+  "classification_note": "Local CPU run; evidence class corrected before publication under Doctrine v11. Independent replay is UNAVAILABLE.",
+  "created_at": "2026-10-03T08:53:54.107437+00:00",
+  "dataset_sha256": {
+    "japan_panel.csv": "842b1cc4baf60858c1f8ff7ed49b4ac1a045f395efcfb5fe5bf87f5bf4d5508b",
+    "japan_verdicts.csv": "e219024e0a629e6a5e98734409cf114e2734569de527fb3b5584e12f63c21b6d"
+  },
+  "energy_joules": "UNAVAILABLE",
+  "evaluation": {
+    "brier_oof": 0.10181558840817871,
+    "cv": "5-fold stratified random CV; preprocessing fitted in each training fold",
+    "ece5_oof_unweighted": 0.031420169680725925,
+    "holdout_limit": "Same Japan panel and author-reviewers; not a new region or independent-panel test",
+    "roc_auc_oof": 0.8497841726618705,
+    "roc_auc_oof_bootstrap_95pct": [
+      0.7707942006327027,
+      0.9118126144688643
+    ]
+  },
+  "evaluation_scope": "same_panel_stratified_out_of_fold",
+  "evidence_class": "REPORTED",
+  "hardware": {
+    "logical_cpu_count": 16,
+    "processor": "Intel64 Family 6 Model 197 Stepping 2, GenuineIntel"
+  },
+  "harness_sha256": "4cf99c65b08e4335d87d0602ef83981031ec86817c260830131dcdc2b5798bc1",
+  "key_trust": "UNAVAILABLE",
+  "model_sha256": "548be53ee6ba599ea894c94911420c241ecaf6ebf321116ecdbe643eac06ee9d",
+  "previous_receipt_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "receipt_sha256": "b04114480317447efbea54eb3c80b82720afe9232373e000d566c6dac5d9df1f",
+  "schema": "szl.seismic-training-receipt/v1",
+  "seed": 20260924,
+  "sequence": 1,
+  "signature_status": "UNSIGNED",
+  "training_loss": {
+    "name": "in_sample_log_loss",
+    "value": 0.2878290171143411
+  }
+}
