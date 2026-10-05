@@ -1,12 +1,12 @@
 /* SZL Seismic Review UI. Credentials live only in this page's input elements. */
-const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", selected:null, selectedOrigin:null, records:new Map()};
+const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", selected:null, selectedOrigin:null, detailRequestSeq:0, records:new Map()};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const cleanNumber = (value, digits=2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
 const operatorToken = () => $("operator-token").value.trim();
 const reviewerToken = () => $("reviewer-token").value.trim();
 const authHeaders = value => value ? {Authorization:`Bearer ${value}`} : {};
-const detailHeaders = () => authHeaders(reviewerToken() || operatorToken());
+const activeDetail = (id,requestSeq) => state.selected === id && state.detailRequestSeq === requestSeq;
 
 async function api(path, options={}) {
   const response = await fetch(path, {cache:"no-store", ...options});
@@ -98,6 +98,9 @@ function importedDetail(data){
 }
 
 async function openDetail(id,origin=state.selectedOrigin,notice=""){
+  const requestSeq=++state.detailRequestSeq;
+  const detailCredential=reviewerToken() || operatorToken();
+  const reviewerCredential=reviewerToken();
   state.selected=id;
   state.selectedOrigin=origin;
   $("drawer-backdrop").hidden=false;
@@ -105,38 +108,50 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
   $("detail-drawer").setAttribute("aria-hidden","false");
   $("reviewer-access").hidden=origin!=="OPERATOR_IMPORT";
   $("detail-content").innerHTML=`<p>Loading record…</p>`;
-  if(origin==="OPERATOR_IMPORT" && !reviewerToken() && !operatorToken()){
+  if(origin==="OPERATOR_IMPORT" && !detailCredential){
     $("detail-content").innerHTML=`<h2>Blind detection</h2><p class="warning">This imported case requires a reviewer token or a source custodian token. Enter a reviewer token above to inspect the blind traces, or add a source custodian token in Operator tools to attach missing waveforms.</p><p>Published records remain available without credentials.</p>`;
     return;
   }
   try{
-    const data=await api(`/api/detections/${encodeURIComponent(id)}`,{headers:detailHeaders()});
+    const data=await api(`/api/detections/${encodeURIComponent(id)}`,{headers:authHeaders(detailCredential)});
+    if(!activeDetail(id,requestSeq) || (reviewerToken() || operatorToken())!==detailCredential)return;
     state.selectedOrigin=data.origin;
     $("reviewer-access").hidden=data.origin!=="OPERATOR_IMPORT";
     $("detail-content").innerHTML=data.origin==="PUBLISHED_PANEL" ? publishedDetail(data) : importedDetail(data);
     if(notice){const message=document.createElement("p");message.className="success-note";message.textContent=notice;$("detail-content").prepend(message);}
-    document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict)));
-    $("attach-waveform")?.addEventListener("click",attachWaveform);
-  }catch(error){$("detail-content").textContent=`Could not load record: ${error.message}`;}
+    document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict,id,reviewerCredential,requestSeq)));
+    $("attach-waveform")?.addEventListener("click",()=>attachWaveform(id,requestSeq));
+  }catch(error){if(activeDetail(id,requestSeq))$("detail-content").textContent=`Could not load record: ${error.message}`;}
 }
 
-function closeDetail(){state.selected=null;state.selectedOrigin=null;$("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;}
+function closeDetail(){++state.detailRequestSeq;state.selected=null;state.selectedOrigin=null;$("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;}
 
-async function submitReview(verdict){
+function clearDetailOnCredentialChange(){
+  if(state.selectedOrigin==="OPERATOR_IMPORT" && state.selected){
+    ++state.detailRequestSeq;
+    $("detail-content").textContent="Credentials changed. Open this case again to refresh the blind view.";
+  }
+}
+
+async function submitReview(verdict,caseId,credential,requestSeq){
+  if(!activeDetail(caseId,requestSeq))return;
   const note=$("review-note").value.trim(),feedback=$("review-feedback");
-  if(!reviewerToken()){feedback.textContent="Enter a reviewer token and reopen this case.";feedback.classList.add("error");return;}
+  if(!credential || reviewerToken()!==credential){feedback.textContent="Reopen this case with the reviewer token shown above.";feedback.classList.add("error");return;}
   const buttons=[...document.querySelectorAll("[data-verdict]")];buttons.forEach(button=>button.disabled=true);
   feedback.textContent="Locking verdict…";feedback.classList.remove("error");
   try{
-    await api("/api/reviews",{method:"POST",headers:{...authHeaders(reviewerToken()),"Content-Type":"application/json"},body:JSON.stringify({detection_id:state.selected,verdict,note})});
-    await openDetail(state.selected,"OPERATOR_IMPORT","Verdict locked for the reviewer identity bound to this token.");await Promise.all([loadCatalogue(),loadSummary()]);
-  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}
+    await api("/api/reviews",{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body:JSON.stringify({detection_id:caseId,verdict,note})});
+    await Promise.all([loadCatalogue(),loadSummary()]);
+    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT","Verdict locked for the reviewer identity bound to this token.");
+  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}}
 }
 
-async function attachWaveform(){
+async function attachWaveform(caseId,requestSeq){
+  if(!activeDetail(caseId,requestSeq))return;
+  const credential=operatorToken();
   const feedback=$("waveform-feedback"),file=$("waveform-file").files[0];
   feedback.classList.remove("error");
-  if(!operatorToken()){feedback.textContent="Enter the source custodian token in Operator tools, then reopen this record.";feedback.classList.add("error");return;}
+  if(!credential){feedback.textContent="Enter the source custodian token in Operator tools, then reopen this record.";feedback.classList.add("error");return;}
   if(!file){feedback.textContent="Choose a waveform JSON file.";feedback.classList.add("error");return;}
   if(file.size>1_000_000){feedback.textContent="Waveform JSON exceeds the 1 MB request limit.";feedback.classList.add("error");return;}
   let body;
@@ -145,13 +160,14 @@ async function attachWaveform(){
     if(!parsed || typeof parsed!=="object" || Array.isArray(parsed) || typeof parsed.source_uri!=="string" || !parsed.source_uri.trim() || !Number.isFinite(Number(parsed.sample_rate_hz)) || Number(parsed.sample_rate_hz)<=0 || !Array.isArray(parsed.stations) || parsed.stations.length!==5 || parsed.stations.some(station=>!station || !Array.isArray(station.samples) || station.samples.length<2 || station.samples.length>10000 || station.samples.some(value=>!Number.isFinite(Number(value)))))throw new Error("JSON must include a source URI, a positive sample rate, and exactly five numeric station traces.");
     body=JSON.stringify(parsed);
   }catch(error){feedback.textContent=error instanceof SyntaxError ? "The selected file is not valid JSON." : error.message;feedback.classList.add("error");return;}
+  if(!activeDetail(caseId,requestSeq))return;
   const button=$("attach-waveform");button.disabled=true;
   feedback.textContent="Attaching and locking waveform evidence…";
   try{
-    const result=await api(`/api/detections/${encodeURIComponent(state.selected)}/waveform`,{method:"POST",headers:{...authHeaders(operatorToken()),"Content-Type":"application/json"},body});
-    await openDetail(state.selected,"OPERATOR_IMPORT",`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`);
+    const result=await api(`/api/detections/${encodeURIComponent(caseId)}/waveform`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body});
     await Promise.all([loadCatalogue(),loadSummary()]);
-  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}
+    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT",`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`);
+  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}}
 }
 
 async function importCatalogue(){
@@ -172,6 +188,8 @@ async function start(){
   document.addEventListener("keydown",event=>{if(event.key==="Escape")closeDetail();});
   $("open-reviewer-case").addEventListener("click",()=>{if(state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
   $("reviewer-token").addEventListener("keydown",event=>{if(event.key==="Enter" && state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
+  $("reviewer-token").addEventListener("input",clearDetailOnCredentialChange);
+  $("operator-token").addEventListener("input",clearDetailOnCredentialChange);
   $("refresh-button").addEventListener("click",()=>Promise.all([loadSummary(),loadCatalogue()]));
   $("catalogue-filter").addEventListener("change",event=>{state.catalogue=event.target.value;state.offset=0;loadCatalogue();});
   $("prev-button").addEventListener("click",()=>{state.offset=Math.max(0,state.offset-state.limit);loadCatalogue();});

@@ -447,7 +447,7 @@ async def score(request: Request):
     body = await bounded_body(request, 16_384, "score request")
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(400, "invalid JSON") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("features"), dict):
         raise HTTPException(422, "region and features object required")
@@ -509,7 +509,7 @@ async def attach_waveform(detection_id: str, request: Request, authorization: st
     body = await bounded_body(request, 1_000_000, "waveform JSON")
     try:
         evidence = json.loads(body)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(400, "invalid JSON") from None
     if not isinstance(evidence, dict) or not isinstance(evidence.get("source_uri"), str) or not evidence["source_uri"]:
         raise HTTPException(422, "waveform source_uri required")
@@ -562,7 +562,7 @@ async def submit_review(request: Request, authorization: str | None = Header(Non
     body = await bounded_body(request, 16_384, "review request")
     try:
         payload = json.loads(body)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(400, "invalid JSON") from None
     if not isinstance(payload, dict):
         raise HTTPException(422, "review object required")

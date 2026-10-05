@@ -36,6 +36,7 @@ def test_published_fixture_and_model_scope():
     assert local["score_status"] == "UNVALIDATED_QUERY"
     assert 0 < local["confirmability_score"] < 1
     assert client.post("/api/score", content=b"x" * 16_385).status_code == 413
+    assert client.post("/api/score", content=b"\xff").status_code == 400
     docs = client.get("/api/docs")
     assert docs.status_code == 200
     directives = {
@@ -43,8 +44,9 @@ def test_published_fixture_and_model_scope():
         for directive in docs.headers["content-security-policy"].split(";")
         if (parts := directive.split())
     }
-    assert "https://cdn.jsdelivr.net" in directives["script-src"]
-    assert "https://cdn.jsdelivr.net" in directives["style-src"]
+    expected_sources = {"'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"}
+    assert directives["script-src"] == expected_sources
+    assert directives["style-src"] == expected_sources
 
 
 def test_runtime_source_binding_requires_file_and_environment_agreement(tmp_path, monkeypatch):
