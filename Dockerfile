@@ -13,6 +13,7 @@ COPY frontend /app/frontend
 COPY data /app/data
 COPY models /app/models
 COPY scripts /app/scripts
+COPY LICENSE RESEARCH.md /app/
 RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 7860
