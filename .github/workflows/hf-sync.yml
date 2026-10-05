@@ -1,0 +1,32 @@
+name: Publish Seismic Review to Hugging Face
+
+# Sole application-file writer for SZLHOLDINGS/szl-seismic-review.
+# Dispatch only after the exact main commit has passed CI and CodeQL.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hf-sync-szl-seismic-review
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
+    uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy.yml@fc71ae973a0f31b8e9ee793fc8545a354448d451
+    with:
+      hf-repo: SZLHOLDINGS/szl-seismic-review
+      ref: ${{ github.sha }}
+      dockerfile-path: Dockerfile
+      source-revision-file: SOURCE_REVISION
+      source-revision-variable: SZL_SOURCE_REVISION
+      source-revision-probe-path: /api/build-info
+      require-default-branch-tip: true
+      include-readme: true
+      smoke-paths: '["/", "/healthz", "/api/meta", "/api/summary", "/api/build-info"]'
+      prune: false
+      wait-running: 600
+      restart-space: false
+    secrets: inherit

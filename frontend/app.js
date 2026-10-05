@@ -1,10 +1,12 @@
-/* SZL Seismic Review UI. No simulated records and no persisted operator token. */
-const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", selected:null, reviewer:""};
+/* SZL Seismic Review UI. Credentials live only in this page's input elements. */
+const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", selected:null, selectedOrigin:null, detailRequestSeq:0, records:new Map()};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const cleanNumber = (value, digits=2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
-const token = () => $("operator-token").value.trim();
-const headers = () => token() ? {Authorization:`Bearer ${token()}`} : {};
+const operatorToken = () => $("operator-token").value.trim();
+const reviewerToken = () => $("reviewer-token").value.trim();
+const authHeaders = value => value ? {Authorization:`Bearer ${value}`} : {};
+const activeDetail = (id,requestSeq) => state.selected === id && state.detailRequestSeq === requestSeq;
 
 async function api(path, options={}) {
   const response = await fetch(path, {cache:"no-store", ...options});
@@ -20,15 +22,15 @@ function badge(value) {return `<span class="badge ${["confirmed","rejected","unr
 async function loadMeta() {
   const meta = await api("/api/meta"); state.meta = meta;
   $("source-state").textContent = `Zenodo ${meta.source_version} · checksum verified`;
-  $("storage-state").textContent = meta.storage_state === "READ_ONLY" ? "Verified source · read only" : "Operator writes enabled";
-  $("write-state").textContent = meta.review_write_enabled ? "Operator mode" : "Read only";
+  $("storage-state").textContent = meta.storage_state === "READ_ONLY" ? "Pinned source · read only" : "Local write storage · durability unverified";
+  $("write-state").textContent = meta.import_enabled && meta.review_write_enabled ? "Custody + review enabled" : meta.import_enabled ? "Custody enabled" : meta.review_write_enabled ? "Review enabled" : "Read only";
   $("train-count").textContent = meta.model.n_train;
   $("count-auc").textContent = cleanNumber(meta.model.evaluation.roc_auc_oof,3);
   $("brier-value").textContent = cleanNumber(meta.model.evaluation.brier_oof,3);
   $("paper-link").href = meta.paper_url;
   $("source-link").href = meta.source_url;
   $("import-button").disabled = !meta.import_enabled;
-  if (!meta.import_enabled) $("import-feedback").textContent = "Import and fresh review are disabled on this read-only deployment.";
+  if (!meta.import_enabled) $("import-feedback").textContent = "Catalogue import and waveform attachment are disabled on this deployment.";
 }
 
 async function loadSummary() {
@@ -44,20 +46,24 @@ function recordRow(item) {
 }
 
 async function loadCatalogue() {
+  const imported = state.catalogue === "__imports__";
   const params = new URLSearchParams({limit:String(state.limit), offset:String(state.offset)});
-  if (state.catalogue) params.set("catalogue",state.catalogue);
+  if (imported) params.set("origin","imported");
+  if (state.catalogue && !imported) params.set("catalogue",state.catalogue);
   const data = await api(`/api/detections?${params}`);
+  const visibleTotal = data.total;
+  state.records = new Map(data.items.map(item => [item.id,item]));
   $("detection-rows").innerHTML = data.items.length ? data.items.map(recordRow).join("") : `<tr><td colspan="7" class="empty">No records in this view.</td></tr>`;
-  $("page-status").textContent = data.total ? `Showing ${state.offset+1}–${Math.min(state.offset+data.items.length,data.total)} of ${data.total} records` : "No records";
+  $("page-status").textContent = visibleTotal ? `Showing ${state.offset+1}–${Math.min(state.offset+data.items.length,visibleTotal)} of ${visibleTotal} records` : "No records";
   $("prev-button").disabled = state.offset === 0;
-  $("next-button").disabled = state.offset + state.limit >= data.total;
-  document.querySelectorAll("[data-record]").forEach(button => button.addEventListener("click",() => openDetail(button.dataset.record)));
+  $("next-button").disabled = state.offset + state.limit >= visibleTotal;
+  document.querySelectorAll("[data-record]").forEach(button => button.addEventListener("click",() => openDetail(button.dataset.record,state.records.get(button.dataset.record)?.origin)));
 }
 
 async function loadFilters() {
-  const data = await api("/api/detections?limit=200&offset=0");
+  const data = await api("/api/detections?origin=published&limit=200&offset=0");
   const catalogues = [...new Set(data.items.filter(x => x.origin === "PUBLISHED_PANEL").map(x => x.catalogue))].sort();
-  $("catalogue-filter").innerHTML = `<option value="">All catalogues</option>` + catalogues.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+  $("catalogue-filter").innerHTML = `<option value="">All catalogues</option><option value="__imports__">Imported cases</option>` + catalogues.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
 }
 
 function field(name,value){return `<div class="detail-field"><small>${esc(name.replaceAll("_"," "))}</small><strong>${esc(typeof value === "number" ? cleanNumber(value,3) : value)}</strong></div>`;}
@@ -65,66 +71,125 @@ function publishedDetail(data) {
   const votes = data.published_verdicts.map(v => `<li><strong>${esc(v.reviewer)}</strong>${badge(v.verdict)}</li>`).join("");
   const meta = Object.entries(data.metadata).map(([name,value]) => field(name,value)).join("");
   const features = Object.entries(data.features).map(([name,value]) => field(name,value)).join("");
-  return `<h2>Published case ${esc(data.event_id)}</h2><p>${badge(data.published_consensus)} &nbsp; Four source-panel verdicts · ${esc(data.catalogue)}</p><p class="warning">The pinned archive does not include continuous waveforms. This record can be inspected, but it cannot receive a new blind verdict here. The displayed model score is a full-panel fit; the evaluation AUC uses out-of-fold predictions.</p><h3>Published votes</h3><ul class="review-list">${votes}</ul><h3>Catalogue metadata</h3><div class="detail-grid">${meta}</div><h3>Seven association features</h3><div class="detail-grid">${features}</div><h3>Model readout</h3><p>${data.confirmability_score == null ? esc(data.score_status) : `${cleanNumber(data.confirmability_score,3)} · ${esc(data.score_status)} · Japan panel only`}</p><a href="${esc(data.source_url)}" target="_blank" rel="noopener noreferrer">View pinned source →</a>`;
+  return `<h2>Published case ${esc(data.event_id)}</h2><p>${badge(data.published_consensus)} &nbsp; Four source-panel verdicts · ${esc(data.catalogue)}</p><p class="warning">The pinned archive does not include continuous waveforms. This record can be inspected, but it cannot receive a new blind verdict here. The displayed model score is a full-panel fit; the evaluation AUC uses out-of-fold predictions.</p><h3>Published votes</h3><ul class="review-list">${votes}</ul><h3>Catalogue metadata</h3><div class="detail-grid">${meta}</div><h3>Seven association features</h3><div class="detail-grid">${features}</div><h3>Model readout</h3><p>${data.confirmability_score == null ? esc(data.score_status) : `${cleanNumber(data.confirmability_score,3)} · ${esc(data.score_status)} · Japan panel only`}</p><a href="${esc(data.source_url)}" target="_blank" rel="noopener noreferrer">View pinned source ↗</a>`;
 }
 
 function plotTrace(samples){
+  if(samples.length>1200){const stride=Math.ceil(samples.length/1200);samples=samples.filter((_,index)=>index%stride===0||index===samples.length-1);}
   const width=480,height=72,low=Math.min(...samples),high=Math.max(...samples),span=high-low||1;
   const points=samples.map((value,index)=>`${(index/(samples.length-1)*width).toFixed(1)},${(height-6-(value-low)/span*(height-12)).toFixed(1)}`).join(" ");
   return `<svg class="trace" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Waveform trace"><polyline points="${points}" fill="none" stroke="currentColor" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`;
 }
 
 function importedDetail(data){
-  let body=`<h2>Blind detection</h2><p>Imported case · event metadata hidden during review.</p>`;
-  if(!data.waveform){return body+`<p class="warning">Waveforms unavailable. A reviewer cannot judge this detection until an authorized operator attaches five real station traces with a source reference through the API.</p><p>Reference: <code>${esc(data.id)}</code></p>`;}
-  body+=`<p class="warning">Waveform set · SHA-256 <code>${esc(data.waveform_sha256)}</code>. ${data.blind ? "The source reference and event metadata stay hidden until this reviewer locks a verdict." : `Source reference: ${esc(data.waveform.source_uri)}.`} Trace authenticity is not independently verified by this service.</p>`;
+  let body=`<h2>${data.blind ? "Blind detection" : `Reviewed detection ${esc(data.event_id)}`}</h2><p>Imported case · ${data.blind ? "event metadata hidden during review" : "metadata revealed to this reviewer after a locked verdict"}.</p><p class="case-reference">Reference: <code>${esc(data.id)}</code></p>`;
+  if(!data.waveform){
+    body+=`<p class="warning">No station traces are attached. Blind review remains closed until the source custodian attaches five traces with a sample rate and source reference.</p>`;
+    if(state.meta.import_enabled){body+=`<div class="attachment-panel"><h3>Attach waveform evidence</h3><p>Choose a JSON file containing <code>source_uri</code>, <code>sample_rate_hz</code>, and exactly five <code>stations</code> with numeric <code>samples</code>. First attachment is locked. Source authenticity remains unverified by this service.</p><label for="waveform-file">Waveform JSON file</label><input class="input" id="waveform-file" type="file" accept=".json,application/json"><button id="attach-waveform" class="btn btn-secondary btn-sm" type="button">Attach five traces</button><p id="waveform-feedback" class="form-feedback" role="status"></p></div>`;}
+    else body+=`<p class="availability">Attachment is disabled on this read-only deployment.</p>`;
+    return body;
+  }
+  body+=`<p class="warning">Five-station waveform attached · SHA-256 <code>${esc(data.waveform_sha256)}</code>. ${data.blind ? "The source reference and event metadata stay hidden until this reviewer locks a verdict." : `Source reference: ${esc(data.waveform.source_uri)}.`} Trace authenticity is unverified by this service.</p><p class="trace-caption">Sample rate: ${cleanNumber(data.waveform.sample_rate_hz,2)} Hz · ${data.waveform.stations.length} stations</p>`;
   data.waveform.stations.forEach(station=>{body+=`<h3>Station ${esc(station.index)}</h3>${plotTrace(station.samples)}<p>P offset: ${esc(station.p_offset_s ?? "unavailable")} s · S offset: ${esc(station.s_offset_s ?? "unavailable")} s</p>`;});
-  if(data.blind && state.meta.review_write_enabled){body+=`<h3>Lock a blind verdict</h3><label for="reviewer-id">Reviewer ID</label><input id="reviewer-id" value="${esc(state.reviewer)}" placeholder="Your reviewer ID" autocomplete="off"><label for="review-note">Evidence note</label><textarea id="review-note" placeholder="What in the traces supports your judgement?"></textarea><div class="review-actions"><button data-verdict="confirmed">Confirmed</button><button data-verdict="unresolved">Unresolved</button><button data-verdict="rejected">Rejected</button></div><p id="review-feedback" role="status"></p>`;}
-  if(!data.blind){body+=`<h3>Locked reviews</h3><ul class="review-list">${(data.reviews||[]).map(v=>`<li><strong>${esc(v.reviewer_id)}</strong>${badge(v.verdict)}</li>`).join("")}</ul><h3>Revealed features</h3><div class="detail-grid">${Object.entries(data.features).map(([k,v])=>field(k,v)).join("")}</div><p>Research score: ${data.confirmability_score == null ? esc(data.score_status) : cleanNumber(data.confirmability_score,3)}</p>`;}
+  if(data.blind && state.meta.review_write_enabled && reviewerToken()){body+=`<h3>Lock a blind verdict</h3><p>Reviewer identity is derived from the token above. A verdict cannot be changed after submission.</p><label for="review-note">Evidence note</label><textarea id="review-note" maxlength="2000" placeholder="What in the traces supports your judgement?"></textarea><div class="review-actions"><button data-verdict="confirmed">Confirmed</button><button data-verdict="unresolved">Unresolved</button><button data-verdict="rejected">Rejected</button></div><p id="review-feedback" class="form-feedback" role="status"></p>`;}
+  else if(data.blind){body+=`<p class="availability">${state.meta.review_write_enabled ? "Enter a reviewer token above and open the case to submit a blind verdict." : "Reviewer writes are disabled on this deployment."}</p>`;}
+  if(!data.blind){body+=`<h3>Locked reviews</h3><ul class="review-list">${(data.reviews||[]).map(v=>`<li><strong>${esc(v.reviewer_id)}</strong>${badge(v.verdict)}</li>`).join("")}</ul><h3>Revealed features</h3><div class="detail-grid">${Object.entries(data.features).map(([k,v])=>field(k,v)).join("")}</div><p>Research score: ${data.confirmability_score == null ? esc(data.score_status) : `${cleanNumber(data.confirmability_score,3)} · ${esc(data.score_status)}`}. Imported-case model readouts are unvalidated.</p>`;}
   return body;
 }
 
-async function openDetail(id,reviewer=""){
+async function openDetail(id,origin=state.selectedOrigin,notice=""){
+  const requestSeq=++state.detailRequestSeq;
+  const detailCredential=reviewerToken() || operatorToken();
+  const reviewerCredential=reviewerToken();
   state.selected=id;
+  state.selectedOrigin=origin;
   $("drawer-backdrop").hidden=false;
   $("detail-drawer").classList.add("open");
   $("detail-drawer").setAttribute("aria-hidden","false");
+  $("reviewer-access").hidden=origin!=="OPERATOR_IMPORT";
   $("detail-content").innerHTML=`<p>Loading record…</p>`;
+  if(origin==="OPERATOR_IMPORT" && !detailCredential){
+    $("detail-content").innerHTML=`<h2>Blind detection</h2><p class="warning">This imported case requires a reviewer token or a source custodian token. Enter a reviewer token above to inspect the blind traces, or add a source custodian token in Operator tools to attach missing waveforms.</p><p>Published records remain available without credentials.</p>`;
+    return;
+  }
   try{
-    const query=reviewer ? `?reviewer_id=${encodeURIComponent(reviewer)}` : "";
-    const data=await api(`/api/detections/${encodeURIComponent(id)}${query}`,{headers:headers()});
+    const data=await api(`/api/detections/${encodeURIComponent(id)}`,{headers:authHeaders(detailCredential)});
+    if(!activeDetail(id,requestSeq) || (reviewerToken() || operatorToken())!==detailCredential)return;
+    state.selectedOrigin=data.origin;
+    $("reviewer-access").hidden=data.origin!=="OPERATOR_IMPORT";
     $("detail-content").innerHTML=data.origin==="PUBLISHED_PANEL" ? publishedDetail(data) : importedDetail(data);
-    document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict)));
-  }catch(error){$("detail-content").textContent=`Could not load record: ${error.message}`;}
+    if(notice){const message=document.createElement("p");message.className="success-note";message.textContent=notice;$("detail-content").prepend(message);}
+    document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict,id,reviewerCredential,requestSeq)));
+    $("attach-waveform")?.addEventListener("click",()=>attachWaveform(id,requestSeq));
+  }catch(error){if(activeDetail(id,requestSeq))$("detail-content").textContent=`Could not load record: ${error.message}`;}
 }
 
-function closeDetail(){state.selected=null;$("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;}
+function closeDetail(){++state.detailRequestSeq;state.selected=null;state.selectedOrigin=null;$("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;}
 
-async function submitReview(verdict){
-  const reviewer=$("reviewer-id").value.trim(),note=$("review-note").value.trim();
-  if(!reviewer){$("review-feedback").textContent="Enter a reviewer ID.";return;}
-  state.reviewer=reviewer;
+function clearDetailOnCredentialChange(){
+  if(state.selectedOrigin==="OPERATOR_IMPORT" && state.selected){
+    ++state.detailRequestSeq;
+    $("detail-content").textContent="Credentials changed. Open this case again to refresh the blind view.";
+  }
+}
+
+async function submitReview(verdict,caseId,credential,requestSeq){
+  if(!activeDetail(caseId,requestSeq))return;
+  const note=$("review-note").value.trim(),feedback=$("review-feedback");
+  if(!credential || reviewerToken()!==credential){feedback.textContent="Reopen this case with the reviewer token shown above.";feedback.classList.add("error");return;}
+  const buttons=[...document.querySelectorAll("[data-verdict]")];buttons.forEach(button=>button.disabled=true);
+  feedback.textContent="Locking verdict…";feedback.classList.remove("error");
   try{
-    await api("/api/reviews",{method:"POST",headers:{...headers(),"Content-Type":"application/json"},body:JSON.stringify({detection_id:state.selected,reviewer_id:reviewer,verdict,note})});
-    await openDetail(state.selected,reviewer);await loadCatalogue();await loadSummary();
-  }catch(error){$("review-feedback").textContent=error.message;}
+    await api("/api/reviews",{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body:JSON.stringify({detection_id:caseId,verdict,note})});
+    await Promise.all([loadCatalogue(),loadSummary()]);
+    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT","Verdict locked for the reviewer identity bound to this token.");
+  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}}
+}
+
+async function attachWaveform(caseId,requestSeq){
+  if(!activeDetail(caseId,requestSeq))return;
+  const credential=operatorToken();
+  const feedback=$("waveform-feedback"),file=$("waveform-file").files[0];
+  feedback.classList.remove("error");
+  if(!credential){feedback.textContent="Enter the source custodian token in Operator tools, then reopen this record.";feedback.classList.add("error");return;}
+  if(!file){feedback.textContent="Choose a waveform JSON file.";feedback.classList.add("error");return;}
+  if(file.size>1_000_000){feedback.textContent="Waveform JSON exceeds the 1 MB request limit.";feedback.classList.add("error");return;}
+  let body;
+  try{
+    const parsed=JSON.parse(await file.text());
+    if(!parsed || typeof parsed!=="object" || Array.isArray(parsed) || typeof parsed.source_uri!=="string" || !parsed.source_uri.trim() || !Number.isFinite(Number(parsed.sample_rate_hz)) || Number(parsed.sample_rate_hz)<=0 || !Array.isArray(parsed.stations) || parsed.stations.length!==5 || parsed.stations.some(station=>!station || !Array.isArray(station.samples) || station.samples.length<2 || station.samples.length>10000 || station.samples.some(value=>!Number.isFinite(Number(value)))))throw new Error("JSON must include a source URI, a positive sample rate, and exactly five numeric station traces.");
+    body=JSON.stringify(parsed);
+  }catch(error){feedback.textContent=error instanceof SyntaxError ? "The selected file is not valid JSON." : error.message;feedback.classList.add("error");return;}
+  if(!activeDetail(caseId,requestSeq))return;
+  const button=$("attach-waveform");button.disabled=true;
+  feedback.textContent="Attaching and locking waveform evidence…";
+  try{
+    const result=await api(`/api/detections/${encodeURIComponent(caseId)}/waveform`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body});
+    await Promise.all([loadCatalogue(),loadSummary()]);
+    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT",`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`);
+  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}}
 }
 
 async function importCatalogue(){
   const file=$("import-file").files[0],catalogue=$("import-catalogue").value.trim(),region=$("import-region").value.trim(),feedback=$("import-feedback");
+  if(!operatorToken()){feedback.textContent="Enter a source custodian token.";feedback.classList.add("error");return;}
   if(!file||!catalogue||!region){feedback.textContent="Choose a CSV and enter catalogue and region.";feedback.classList.add("error");return;}
+  const button=$("import-button");button.disabled=true;feedback.textContent="Importing catalogue…";feedback.classList.remove("error");
   try{
     const query=new URLSearchParams({catalogue,region});
-    const result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...headers(),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
-    const hash=document.createElement("code");hash.textContent=result.source_sha256;
-    feedback.replaceChildren(`Imported ${result.imported} records. Source SHA-256: `,hash,". Waveform attachment remains required.");
-    feedback.classList.remove("error");state.offset=0;await loadSummary();await loadCatalogue();
-  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");}
+    const result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(operatorToken()),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
+    feedback.textContent=`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required.`;
+    feedback.classList.remove("error");state.offset=0;state.catalogue="__imports__";$("catalogue-filter").value="__imports__";await loadSummary();await loadCatalogue();
+  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");}finally{button.disabled=false;}
 }
 
 async function start(){
   $("close-drawer").addEventListener("click",closeDetail);$("drawer-backdrop").addEventListener("click",closeDetail);
   document.addEventListener("keydown",event=>{if(event.key==="Escape")closeDetail();});
+  $("open-reviewer-case").addEventListener("click",()=>{if(state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
+  $("reviewer-token").addEventListener("keydown",event=>{if(event.key==="Enter" && state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
+  $("reviewer-token").addEventListener("input",clearDetailOnCredentialChange);
+  $("operator-token").addEventListener("input",clearDetailOnCredentialChange);
   $("refresh-button").addEventListener("click",()=>Promise.all([loadSummary(),loadCatalogue()]));
   $("catalogue-filter").addEventListener("change",event=>{state.catalogue=event.target.value;state.offset=0;loadCatalogue();});
   $("prev-button").addEventListener("click",()=>{state.offset=Math.max(0,state.offset-state.limit);loadCatalogue();});

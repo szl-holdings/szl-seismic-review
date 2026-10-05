@@ -8,3 +8,4 @@ work/
 *.db
 *.db-*
 .env
+SOURCE_REVISION

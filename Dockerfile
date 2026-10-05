@@ -8,9 +8,12 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 COPY app.py /app/app.py
+COPY SOURCE_REVISION /app/SOURCE_REVISION
 COPY frontend /app/frontend
 COPY data /app/data
 COPY models /app/models
+COPY scripts /app/scripts
+COPY LICENSE RESEARCH.md /app/
 RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 7860
