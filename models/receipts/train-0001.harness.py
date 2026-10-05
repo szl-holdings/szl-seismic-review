@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-import sklearn
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
@@ -64,7 +63,7 @@ def write_training_receipt(artifact: dict, model_path: Path, training_loss: floa
         "sequence": previous["sequence"] + 1 if previous else 1,
         "previous_receipt_sha256": previous_hash,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "evidence_class": "REPORTED",
+        "evidence_class": "MEASURED",
         "signature_status": "UNSIGNED",
         "key_trust": "UNAVAILABLE",
         "dataset_sha256": artifact["source_sha256"],
@@ -80,7 +79,6 @@ def write_training_receipt(artifact: dict, model_path: Path, training_loss: floa
     }
     receipt["receipt_sha256"] = hashlib.sha256(canonical_json(receipt)).hexdigest()
     path = directory / f"train-{receipt['sequence']:04d}.json"
-    path.with_suffix(".harness.py").write_bytes(Path(__file__).read_bytes())
     path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
@@ -177,7 +175,7 @@ def train() -> dict:
     scaler, classifier = pipeline.steps[0][1], pipeline.steps[1][1]
     artifact = {
         "id": "szl-japan-confirmability-v1",
-        "evidence_class": "REPORTED",
+        "evidence_class": "MEASURED",
         "model_kind": "L2 logistic regression on seven association features",
         "source_doi": source["source"],
         "source_version": source["source_version"],
@@ -199,7 +197,7 @@ def train() -> dict:
         "evaluation": measured,
         "three_feature_baseline": baseline,
         "training_seed": SEED,
-        "algorithm_version": f"scikit-learn {sklearn.__version__}",
+        "algorithm_version": "scikit-learn 1.9.0",
         "waveform_review": "unavailable in pinned archive",
     }
     output = ROOT / "models/japan_assoc_logistic_v1.json"

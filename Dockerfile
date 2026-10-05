@@ -11,6 +11,7 @@ COPY app.py /app/app.py
 COPY frontend /app/frontend
 COPY data /app/data
 COPY models /app/models
+COPY scripts /app/scripts
 RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 7860

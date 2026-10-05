@@ -26,6 +26,7 @@
       0.9118126144688643
     ]
   },
+  "evidence_class": "REPORTED",
   "features": [
     "n_pha_total",
     "n_sta",
