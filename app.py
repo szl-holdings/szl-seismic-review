@@ -147,6 +147,113 @@ def score_features(region: str, values: dict) -> dict:
     }
 
 
+# Opt-in input contract. /api/score applies it only when a request carries an
+# "input_contract" key; score_features and catalogue import never consult it.
+PLAIN_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+FIXTURE_BASIS = "holds in all 200 published fixture rows; not physical law"
+INPUT_CONTRACT_V1 = {
+    "version": "szl.seismic-input/v1",
+    "model_id": MODEL["id"],
+    "unit_policy": "REFUSE_MISMATCH_NEVER_CONVERT",
+    "value_forms": ("finite JSON number (not boolean) or plain decimal string: optional leading minus, "
+                    "ASCII digits, optional fraction; no exponent, whitespace, underscore, inf or nan"),
+    "features": {
+        "n_pha_total": {"unit": "count", "kind": "integer", "domain": {"min": 0},
+                        "definition": "total phase count"},
+        "n_sta": {"unit": "count", "kind": "integer", "domain": {"min": 0},
+                  "definition": "station count"},
+        "moveout_rms": {"unit": "s", "kind": "real", "domain": {"min": 0},
+                        "definition": "travel-time move-out RMS"},
+        "az_gap": {"unit": "deg", "kind": "real", "domain": {"min": 0, "max": 360},
+                   "definition": "primary azimuth gap"},
+        "sec_az_gap": {"unit": "deg", "kind": "real", "domain": {"min": 0, "max": 360},
+                       "definition": "secondary azimuth gap; fixture rows match a second-largest-gap reading",
+                       "definition_status": "UNVERIFIED"},
+        "dist_nearest_sta_km": {"unit": "km", "kind": "real", "domain": {"min": 0},
+                                "definition": "nearest station distance"},
+        "mag": {"unit": "magnitude", "kind": "real", "domain": {},
+                "definition": "catalogue magnitude", "scale": "UNDECLARED_IN_SOURCE_FIXTURE"},
+    },
+    "observed_invariants": [
+        {"code": "PHASES_EXCEED_TWO_PER_STATION", "holds_when": "n_pha_total <= 2 * n_sta",
+         "effect": "ADVISORY", "evidence_class": "DATA_OBSERVED", "basis": FIXTURE_BASIS},
+        {"code": "SECONDARY_GAP_EXCEEDS_PRIMARY", "holds_when": "sec_az_gap <= az_gap",
+         "effect": "ADVISORY", "evidence_class": "DATA_OBSERVED", "basis": FIXTURE_BASIS,
+         "definition_status": "UNVERIFIED"},
+        {"code": "GAPS_SUM_EXCEEDS_360", "holds_when": "az_gap + sec_az_gap <= 360",
+         "effect": "ADVISORY", "evidence_class": "DATA_OBSERVED", "basis": FIXTURE_BASIS,
+         "definition_status": "UNVERIFIED"},
+    ],
+    "claim": ("Conformance checks declared units, value forms and domains only. It is not scientific "
+              "qualification and does not mean an input lies inside the training support."),
+}
+
+
+def contract_number(value: Any) -> float | None:
+    """Parse a JSON number (not bool) or a plain decimal string; refuse every other form."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except OverflowError:
+            return math.inf
+    if isinstance(value, str) and PLAIN_DECIMAL.fullmatch(value):
+        return float(value)
+    return None
+
+
+def check_input_contract(values: Any, declared_units: Any) -> dict:
+    """Check feature values against INPUT_CONTRACT_V1. Pure and stdlib-only.
+
+    A declared unit must equal the contract unit exactly; a mismatch is refused,
+    never converted. Advisory relations are DATA_OBSERVED and never change status.
+    """
+    values = values if isinstance(values, dict) else {}
+    units = declared_units if isinstance(declared_units, dict) else {}
+    violations = []
+    parsed = {}
+    for name in FEATURES:
+        spec = INPUT_CONTRACT_V1["features"][name]
+        declared = units.get(name)
+        if declared is None:
+            violations.append({"feature": name, "code": "UNIT_UNDECLARED", "expected": spec["unit"]})
+        elif declared != spec["unit"]:
+            violations.append({"feature": name, "code": "UNIT_MISMATCH", "expected": spec["unit"]})
+        number = contract_number(values.get(name))
+        domain = spec["domain"]
+        if number is None:
+            violations.append({"feature": name, "code": "NON_NUMERIC",
+                               "expected": "JSON number or plain decimal string"})
+        elif (not math.isfinite(number) or number < domain.get("min", -math.inf)
+              or number > domain.get("max", math.inf)):
+            expected = ["finite"]
+            if "min" in domain:
+                expected.append(f">= {domain['min']}")
+            if "max" in domain:
+                expected.append(f"<= {domain['max']}")
+            violations.append({"feature": name, "code": "DOMAIN", "expected": ", ".join(expected)})
+        elif spec["kind"] == "integer" and not number.is_integer():
+            violations.append({"feature": name, "code": "NON_INTEGER_COUNT", "expected": "integer"})
+        else:
+            parsed[name] = number
+    flagged = set()
+    if {"n_pha_total", "n_sta"} <= parsed.keys() and parsed["n_pha_total"] > 2 * parsed["n_sta"]:
+        flagged.add("PHASES_EXCEED_TWO_PER_STATION")
+    if {"az_gap", "sec_az_gap"} <= parsed.keys():
+        if parsed["sec_az_gap"] > parsed["az_gap"]:
+            flagged.add("SECONDARY_GAP_EXCEEDS_PRIMARY")
+        if parsed["az_gap"] + parsed["sec_az_gap"] > 360:
+            flagged.add("GAPS_SUM_EXCEEDS_360")
+    return {
+        "version": INPUT_CONTRACT_V1["version"],
+        "status": "VIOLATION" if violations else "CONFORMS",
+        "violations": violations,
+        "advisory": [dict(item) for item in INPUT_CONTRACT_V1["observed_invariants"] if item["code"] in flagged],
+        "claim": INPUT_CONTRACT_V1["claim"],
+    }
+
+
 @contextmanager
 def database():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -451,10 +558,23 @@ async def score(request: Request):
         raise HTTPException(400, "invalid JSON") from None
     if not isinstance(payload, dict) or not isinstance(payload.get("features"), dict):
         raise HTTPException(422, "region and features object required")
+    contract_report = None
+    if "input_contract" in payload:  # Opt-in only; without the key the response is unchanged.
+        contract = payload["input_contract"]
+        if not isinstance(contract, dict) or contract.get("version") != INPUT_CONTRACT_V1["version"]:
+            raise HTTPException(422, f"input_contract needs version {INPUT_CONTRACT_V1['version']} and units")
+        contract_report = check_input_contract(payload["features"], contract.get("units"))
+        if contract_report["status"] != "CONFORMS":
+            return {"model_id": MODEL["id"], "claim": MODEL["claim"],
+                    "score_status": "INPUT_CONTRACT_VIOLATION", "confirmability_score": None,
+                    "input_contract": contract_report}
     scored = score_features(payload.get("region", ""), payload["features"])
     if scored["score_status"] == "JAPAN_PANEL_RESEARCH":
         scored["score_status"] = "UNVALIDATED_QUERY"
-    return {"model_id": MODEL["id"], "claim": MODEL["claim"], **scored}
+    response = {"model_id": MODEL["id"], "claim": MODEL["claim"], **scored}
+    if contract_report is not None:
+        response["input_contract"] = contract_report
+    return response
 
 
 @app.post("/api/catalogues/import")

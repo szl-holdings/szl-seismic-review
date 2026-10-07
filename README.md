@@ -47,6 +47,37 @@ event_id,n_pha_total,n_sta,moveout_rms,az_gap,sec_az_gap,dist_nearest_sta_km,mag
 
 Optional `time,lat,lon,dep` fields are hidden during blind review. Azimuth gaps are in degrees, nearest-station distance in kilometres, and move-out RMS in seconds. Imports from outside the fitted Japan region abstain; values beyond the training feature ranges also abstain. Any score on a new import is labelled **unvalidated import** until a suitable independent panel and local calibration exist.
 
+### Input contract v1 (opt-in)
+
+`/api/score` accepts an optional `input_contract` object. Without it, requests and responses are unchanged. With it, the service checks the features against `INPUT_CONTRACT_V1` in `app.py` before scoring:
+
+```json
+{
+  "region": "japan_forearc",
+  "features": {"n_pha_total": 27, "n_sta": 20, "moveout_rms": 0.5594, "az_gap": 214.0,
+               "sec_az_gap": 50.8, "dist_nearest_sta_km": 39.455, "mag": 0.87},
+  "input_contract": {
+    "version": "szl.seismic-input/v1",
+    "units": {"n_pha_total": "count", "n_sta": "count", "moveout_rms": "s", "az_gap": "deg",
+              "sec_az_gap": "deg", "dist_nearest_sta_km": "km", "mag": "magnitude"}
+  }
+}
+```
+
+| Feature | Unit token | Accepted values |
+|---|---|---|
+| `n_pha_total`, `n_sta` | `count` | integer, at least 0 |
+| `moveout_rms` | `s` | real, at least 0 |
+| `az_gap`, `sec_az_gap` | `deg` | real, 0 to 360 |
+| `dist_nearest_sta_km` | `km` | real, at least 0 |
+| `mag` | `magnitude` | real; the magnitude scale is undeclared in the source fixture |
+
+- Each declared unit must equal its token exactly. A missing unit is `UNIT_UNDECLARED`; any other value, such as `ms`, `mi`, `rad`, `seconds` or `Mw`, is `UNIT_MISMATCH`. The service refuses mismatches and never converts units.
+- Values must be finite JSON numbers (not booleans) or plain decimal strings: an optional leading minus, ASCII digits and an optional fraction, with no exponent, whitespace, underscore, `inf` or `nan`. Other forms are `NON_NUMERIC`, a fractional count is `NON_INTEGER_COUNT`, and a value outside the range above is `DOMAIN`.
+- Any violation returns `score_status` `INPUT_CONTRACT_VIOLATION` with `confirmability_score: null` and the list of violations. A conforming request is scored exactly as it would be without the key, and the response gains an `input_contract` block. An unknown `version` or a non-object `input_contract` is rejected with HTTP 422.
+- Three relations hold in all 200 published rows: `n_pha_total <= 2 * n_sta`, `sec_az_gap <= az_gap`, and `az_gap + sec_az_gap <= 360`. A request that breaks one gets an advisory (`PHASES_EXCEED_TWO_PER_STATION`, `SECONDARY_GAP_EXCEEDS_PRIMARY` or `GAPS_SUM_EXCEEDS_360`) that never changes the status. These relations are data-observed, not physical law. The `sec_az_gap` relations match a "second-largest gap" reading, which is **UNVERIFIED** against the source pipeline's code; the common secondary-gap definition (the largest gap after removing one station) is never smaller than the primary gap.
+- Contract conformance is not scientific qualification. A conforming input can still fall outside the training support (three published rows conform and still abstain), and the per-feature training box is not joint support. `/api/catalogues/import` and requests without the key do not use the contract.
+
 ## Rebuild the research fixture and model
 
 The committed small CSV fixture and model artifact are enough to run the app. To independently rebuild the fixture, download the three named archives from [Zenodo record 22059219](https://zenodo.org/records/22059219) into a local archive directory, then run:
