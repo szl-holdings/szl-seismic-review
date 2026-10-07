@@ -16,6 +16,8 @@ import sqlite3
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +152,7 @@ def score_features(region: str, values: dict) -> dict:
 # Opt-in input contract. /api/score applies it only when a request carries an
 # "input_contract" key; score_features and catalogue import never consult it.
 PLAIN_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+MAX_CONTRACT_DECIMAL_CHARS = 4096
 FIXTURE_BASIS = "holds in all 200 published fixture rows; not physical law"
 INPUT_CONTRACT_V1 = {
     "version": "szl.seismic-input/v1",
@@ -189,18 +192,28 @@ INPUT_CONTRACT_V1 = {
 }
 
 
-def contract_number(value: Any) -> float | None:
-    """Parse a JSON number (not bool) or a plain decimal string; refuse every other form."""
+def contract_number(value: Any) -> int | Decimal | None:
+    """Retain exact integers/decimal strings; decoded JSON floats have already rounded."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
-        try:
-            return float(value)
-        except OverflowError:
-            return math.inf
-    if isinstance(value, str) and PLAIN_DECIMAL.fullmatch(value):
-        return float(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return Decimal("NaN")  # Numeric but outside the domain; never do arithmetic on it.
+        return Decimal(str(value))
+    if (isinstance(value, str) and len(value) <= MAX_CONTRACT_DECIMAL_CHARS
+            and PLAIN_DECIMAL.fullmatch(value)):
+        return Decimal(value)
     return None
+
+
+def scorer_number_is_finite(number: int | Decimal) -> bool:
+    """The unchanged legacy scorer requires finite binary64 representation."""
+    try:
+        return math.isfinite(float(number))
+    except OverflowError:
+        return False
 
 
 def check_input_contract(values: Any, declared_units: Any) -> dict:
@@ -225,18 +238,24 @@ def check_input_contract(values: Any, declared_units: Any) -> dict:
         if number is None:
             violations.append({"feature": name, "code": "NON_NUMERIC",
                                "expected": "JSON number or plain decimal string"})
-        elif (not math.isfinite(number) or number < domain.get("min", -math.inf)
-              or number > domain.get("max", math.inf)):
+        elif ((isinstance(number, Decimal) and not number.is_finite())
+              or ("min" in domain and number < domain["min"])
+              or ("max" in domain and number > domain["max"])):
             expected = ["finite"]
             if "min" in domain:
                 expected.append(f">= {domain['min']}")
             if "max" in domain:
                 expected.append(f"<= {domain['max']}")
             violations.append({"feature": name, "code": "DOMAIN", "expected": ", ".join(expected)})
-        elif spec["kind"] == "integer" and not number.is_integer():
+        elif (spec["kind"] == "integer" and isinstance(number, Decimal)
+              and number != number.to_integral_value()):
             violations.append({"feature": name, "code": "NON_INTEGER_COUNT", "expected": "integer"})
+        elif not scorer_number_is_finite(number):
+            violations.append({"feature": name, "code": "DOMAIN", "expected": "finite"})
         else:
-            parsed[name] = number
+            # Decimal addition/multiplication use ambient precision. Fractions
+            # keep all accepted digits for the advisory-only relations below.
+            parsed[name] = Fraction(number)
     flagged = set()
     if {"n_pha_total", "n_sta"} <= parsed.keys() and parsed["n_pha_total"] > 2 * parsed["n_sta"]:
         flagged.add("PHASES_EXCEED_TWO_PER_STATION")

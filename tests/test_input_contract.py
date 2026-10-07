@@ -11,6 +11,7 @@ import json
 import math
 import sys
 from collections import Counter
+from decimal import localcontext
 from pathlib import Path
 
 import pytest
@@ -218,6 +219,92 @@ def test_value_forms_refused_only_in_contract_mode(client):
     assert violation_codes(body["input_contract"]) == [("mag", "DOMAIN")]
     integral = service.check_input_contract({**features, "n_sta": 20.0, "n_pha_total": "27.0"}, CANONICAL_UNITS)
     assert integral["status"] == "CONFORMS"
+
+
+@pytest.mark.parametrize("feature,value,code", [
+    ("n_pha_total", "27.0000000000000001", "NON_INTEGER_COUNT"),
+    ("n_sta", "20.0000000000000001", "NON_INTEGER_COUNT"),
+    ("n_sta", "0.0000000000000001", "NON_INTEGER_COUNT"),
+    ("az_gap", "360.0000000000000001", "DOMAIN"),
+    ("sec_az_gap", "360.0000000000000001", "DOMAIN"),
+    ("moveout_rms", "-0." + "0" * 400 + "1", "DOMAIN"),
+    ("dist_nearest_sta_km", "-0." + "0" * 400 + "1", "DOMAIN"),
+    ("n_sta", "-0." + "0" * 400 + "1", "DOMAIN"),
+    ("n_sta", 10 ** 4000, "DOMAIN"),
+    ("n_sta", True, "NON_NUMERIC"),
+    ("mag", "+0.5", "NON_NUMERIC"),
+    ("mag", "1e0", "NON_NUMERIC"),
+    ("mag", "1_0", "NON_NUMERIC"),
+    ("mag", "０.５", "NON_NUMERIC"),
+    ("mag", "0" * 4097, "NON_NUMERIC"),
+], ids=["fractional-phase", "fractional-station", "tiny-fractional-station", "primary-over-360",
+        "secondary-over-360", "negative-rms-underflow", "negative-distance-underflow",
+        "negative-station-underflow", "huge-integer", "boolean", "plus", "exponent",
+        "underscore", "non-ascii", "overlong-decimal"])
+def test_exact_decimal_violations_before_scoring(client, feature, value, code):
+    features = {**features_of(panel_rows()[0]), feature: value}
+    report = service.check_input_contract(features, CANONICAL_UNITS)
+    assert violation_codes(report) == [(feature, code)]
+    response = client.post("/api/score", json={"region": REGION, "features": features,
+                                               "input_contract": opt_in()})
+    assert response.status_code == 200
+    assert response.json()["score_status"] == "INPUT_CONTRACT_VIOLATION"
+    assert response.json()["confirmability_score"] is None
+    assert violation_codes(response.json()["input_contract"]) == [(feature, code)]
+
+
+@pytest.mark.parametrize("feature,value", [
+    ("n_pha_total", "27.0"), ("n_sta", "20.0000000000000000"),
+    ("n_sta", "-0.0000000000000000"), ("moveout_rms", "-0.0"),
+    ("moveout_rms", "0." + "0" * 400 + "1"),
+    ("az_gap", "0.0000000000000001"),
+    ("az_gap", "359.9999999999999999"), ("az_gap", "360.0000000000000000"),
+])
+def test_exact_decimal_boundaries_preserve_legacy_scores(client, feature, value):
+    features = {**features_of(panel_rows()[0]), feature: value}
+    payload = {"region": REGION, "features": features}
+    report = service.check_input_contract(features, CANONICAL_UNITS)
+    assert report["status"] == "CONFORMS"
+    response = client.post("/api/score", json={**payload, "input_contract": opt_in()})
+    assert response.status_code == 200
+    assert response.json() == {**json.loads(legacy_body(payload)), "input_contract": report}
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_nonfinite_json_numbers_are_domain_violations(client, value):
+    payload = {"region": REGION, "features": {**features_of(panel_rows()[0]), "mag": value},
+               "input_contract": opt_in()}
+    response = client.post("/api/score", content=json.dumps(payload).encode())
+    assert response.status_code == 200
+    assert violation_codes(response.json()["input_contract"]) == [("mag", "DOMAIN")]
+
+
+def test_exact_advisories_do_not_round_or_depend_on_decimal_context():
+    features = {**features_of(panel_rows()[0]), "n_pha_total": 2 ** 54 + 1,
+                "n_sta": 2 ** 53, "az_gap": "180.0000000000000000",
+                "sec_az_gap": "180.0000000000000001"}
+    expected = ["PHASES_EXCEED_TWO_PER_STATION", "SECONDARY_GAP_EXCEEDS_PRIMARY",
+                "GAPS_SUM_EXCEEDS_360"]
+    for precision in (1, 2, 28, 100):
+        with localcontext() as context:
+            context.prec = precision
+            report = service.check_input_contract(features, CANONICAL_UNITS)
+        assert report["status"] == "CONFORMS"
+        assert advisory_codes(report) == expected
+    boundary = {**features, "n_pha_total": 2 ** 54, "sec_az_gap": "180.0000000000000000"}
+    assert advisory_codes(service.check_input_contract(boundary, CANONICAL_UNITS)) == []
+
+
+def test_decoded_json_float_precision_is_not_recoverable(client):
+    # json.loads already rounded this numeric token. Plain decimal strings are
+    # required when the sender needs their original decimal precision checked.
+    features = {**features_of(panel_rows()[0]), "n_pha_total": json.loads("27.0000000000000001")}
+    assert features["n_pha_total"] == 27.0
+    report = service.check_input_contract(features, CANONICAL_UNITS)
+    assert report["status"] == "CONFORMS"
+    payload = {"region": REGION, "features": features}
+    response = client.post("/api/score", json={**payload, "input_contract": opt_in()})
+    assert response.json() == {**json.loads(legacy_body(payload)), "input_contract": report}
 
 
 def test_advisory_relations_never_change_status(client):
