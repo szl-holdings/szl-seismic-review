@@ -23,6 +23,7 @@ This is a **research pilot**. It does not determine whether an earthquake physic
 - A source-custodian CSV import and reviewer-scoped blind workflow. Each reviewer has a distinct bearer credential; their identity comes from that credential, never a request field. Event metadata and the waveform source stay hidden from each reviewer until their own verdict is locked. The custodian can attach five station traces in the browser, and duplicate reviewer submissions are blocked. These traces are **operator-supplied and not independently authenticated by the service**.
 - An atomic, locally hash-chained receipt for every import, waveform attachment, and verdict. These receipts are **UNSIGNED**, and local SQLite durability and administrator resistance are **UNVERIFIED**. They are not Khipu or independent authorization proofs.
 - A public read-only mode by default. The Hugging Face Space does not enable writes or store new review data.
+- A searchable review desk with catalogue and published-verdict filters, filtered JSON export, keyboard-accessible case details, and an evidence panel tied to the bytes loaded by the service. Imports remain blind in public search and export, including after a reviewer's private reveal.
 
 The published archive does **not** contain continuous waveform traces, so the 200 source-panel cases cannot be freshly reviewed here. Their published verdicts are shown as source data, never as a new SZL adjudication.
 
@@ -92,7 +93,21 @@ The extraction script checks each archive's MD5 against the pinned Zenodo record
 
 ## API and deployment
 
-`/healthz`, `/api/meta`, `/api/summary`, `/api/detections`, `/api/detections/{id}` and `/api/score` provide read access. Imported case detail requires either the source-custodian token or that reviewer's token. `/api/catalogues/import` and `/api/detections/{id}/waveform` require the custodian token; `/api/reviews` requires a reviewer token and derives the reviewer ID from it. `/api/receipts` lets the custodian check local receipt-chain self-consistency without writing on GET. `/api/docs` is the interactive API reference. The public Space is deliberately read-only.
+`/healthz`, `/api/meta`, `/api/summary`, `/api/detections`, `/api/detections/{id}`, `/api/export`, `/api/evidence` and `/api/score` provide read access. Imported case detail requires either the source-custodian token or that reviewer's token. `/api/catalogues/import` and `/api/detections/{id}/waveform` require the custodian token; `/api/reviews` requires a reviewer token and derives the reviewer ID from it. `/api/receipts` lets the custodian check local receipt-chain self-consistency without writing on GET. `/api/docs` is the interactive API reference. The public Space is deliberately read-only.
+
+### Discovery, export and evidence
+
+- `/api/detections` and `/api/export` accept `q` (up to 100 characters), `catalogue`, `origin` (`published` or `imported`), and `consensus` (`confirmed`, `rejected` or `unresolved`). Search covers public case identifiers and published catalogue names. Imported events are searchable only by their opaque public ID; private event names, metadata, scores, source catalogue and waveform provenance are excluded. The published-consensus filter excludes imports.
+- Export returns the same public card fields as discovery, with attribution, evidence class, filters and pagination metadata. Its limit is 10,000 cards per request; `truncated` and `next_offset` describe a partial export. This is a catalogue export, not a waveform or private-review export.
+- `/api/evidence` identifies the loaded model and source bytes, the training receipt file hash and chain head, the unchanged same-panel evaluation, and runtime source-binding state. Same-panel results remain **REPORTED** and independent replay remains **UNAVAILABLE**. Hash agreement does not authenticate the unsigned receipt or validate supplied traces. These GET routes never mint a receipt; API responses use `Cache-Control: no-store`.
+
+Browser regressions run in CI against a temporary read-only service. To run them locally where loopback networking and Chromium are available:
+
+```bash
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python tests/browser_smoke.py
+```
 
 `Dockerfile` serves port 7860 for Hugging Face Spaces. No application credential is required to use the public read-only viewer. The local operator database is excluded from Git and the Docker build. Publication requires a separate Hugging Face publisher credential.
 
@@ -102,7 +117,9 @@ The extraction script checks each archive's MD5 against the pinned Zenodo record
 
 Before the first dispatch, provision a **public Docker Space on CPU Basic** named `SZLHOLDINGS/szl-seismic-review` and make a target-scoped `HF_TOKEN` available to this repository's Actions through a repository or selected-organization secret. The central publisher requires an existing Space; it does not create one. Local CLI login does not establish Actions access. Leave `SZL_REVIEW_WRITE_TOKEN` and `SZL_REVIEWER_TOKENS_JSON` unset on this public Space.
 
-After the exact merged source has passed both CI and the CodeQL result gate, dispatch **Publish Seismic Review to Hugging Face** on `main`. The publisher generates an untracked `SOURCE_REVISION` file, mirrors the exact source bytes, sets and reads back `SZL_SOURCE_REVISION`, and checks the immutable Hub revision, running revision, payload hashes, and the declared application routes. `/api/build-info` reports a source match only when the baked file and runtime variable agree; it does not mint a receipt on GET. Keep the resulting GitHub run, source SHA, Hub SHA, deployment manifest, and runtime probe together in the release record. A workflow definition or a successful source test alone does not establish publication or runtime verification.
+After the exact merged source has passed CI and CodeQL, dispatch **Publish Seismic Review to Hugging Face** on `main`. Its readiness job verifies the current main SHA, the latest successful push runs and required jobs for that SHA, any separate trusted CodeQL result checks, and a readable zero-open-alert CodeQL inventory for main. A failed or pending check, unresolved alert, unreadable API, incomplete inventory or moved source blocks publication. The pinned CodeQL analysis action waits for SARIF processing before completing. A successful analysis upload alone is insufficient.
+
+The publisher then generates an untracked `SOURCE_REVISION` file, mirrors the exact source bytes, sets and reads back `SZL_SOURCE_REVISION`, and checks the immutable Hub revision, running revision, payload hashes, and the declared application routes, including `/api/evidence`. `/api/build-info` reports a source match only when the baked file and runtime variable agree; it does not mint a receipt on GET. Keep the resulting GitHub run, source SHA, Hub SHA, deployment manifest, and runtime probe together in the release record. A workflow definition or a successful source test alone does not establish publication or runtime verification.
 
 For a local Docker build from a clean checkout, create the same untracked ASCII source file explicitly before building:
 

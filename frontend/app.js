@@ -1,8 +1,8 @@
 /* SZL Seismic Review UI. Credentials live only in this page's input elements. */
-const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", selected:null, selectedOrigin:null, detailRequestSeq:0, records:new Map()};
+const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", query:"", consensus:"", catalogueRequestSeq:0, catalogueLoaded:false, exportBusy:false, searchTimer:null, evidenceRequestSeq:0, selected:null, selectedOrigin:null, detailRequestSeq:0, returnFocus:null, records:new Map()};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
-const cleanNumber = (value, digits=2) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+const cleanNumber = (value, digits=2) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
 const operatorToken = () => $("operator-token").value.trim();
 const reviewerToken = () => $("reviewer-token").value.trim();
 const authHeaders = value => value ? {Authorization:`Bearer ${value}`} : {};
@@ -18,6 +18,8 @@ async function api(path, options={}) {
 
 function label(value) {return ({confirmed:"Confirmed", rejected:"Rejected", unresolved:"Unresolved", real:"Confirmed", false:"Rejected", uncertain:"Uncertain"})[value] || value || "Awaiting review";}
 function badge(value) {return `<span class="badge ${["confirmed","rejected","unresolved"].includes(value) ? value : "neutral"}">${esc(label(value))}</span>`;}
+function safeLink(value) {try {const url=new URL(value);return ["https:","http:"].includes(url.protocol) ? url.href : "";}catch{return "";}}
+function externalLink(value,text){const href=safeLink(value);return href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : esc(text);}
 
 async function loadMeta() {
   const meta = await api("/api/meta"); state.meta = meta;
@@ -40,24 +42,124 @@ async function loadSummary() {
   $("count-unresolved").textContent = data.unresolved;
 }
 
+async function loadEvidence(){
+  const requestSeq=++state.evidenceRequestSeq;
+  $("evidence-refresh").disabled=true;
+  $("evidence-status").classList.remove("error");
+  $("evidence-status").textContent="Loading evidence from this service…";
+  try{
+    const data=await api("/api/evidence");
+    if(requestSeq!==state.evidenceRequestSeq)return;
+    const {source={},model={},training_receipt:receipt={},runtime={},limits={}}=data;
+    const evaluation=model.evaluation || {}, interval=evaluation.roc_auc_oof_bootstrap_95pct;
+    $("model-evidence").innerHTML=`<div class="stat-line"><span>Evidence class</span><strong>${esc(model.evidence_class || "UNKNOWN")}</strong></div><div class="stat-line"><span>AUC · bootstrap 95% interval</span><strong>${Array.isArray(interval)&&interval.length===2 ? `${cleanNumber(interval[0],3)}–${cleanNumber(interval[1],3)}` : "UNAVAILABLE"}</strong></div><div class="stat-line"><span>Calibration error · 5 bins</span><strong>${cleanNumber(evaluation.ece5_oof_unweighted,3)}</strong></div><p class="evidence-description">${esc(evaluation.cv || "Evaluation method unavailable.")}</p><p class="evidence-description">${esc(evaluation.holdout_limit || "Independent evaluation unavailable.")}</p><details class="feature-details"><summary>Model identity and features</summary><p><code>${esc(model.id || "UNKNOWN")}</code></p><ul class="feature-list">${(model.features || []).map(name=>`<li><code>${esc(name)}</code></li>`).join("")}</ul><p>${esc(model.claim || "Model claim unavailable.")}</p></details>`;
+    $("train-count").textContent=model.training_cases ?? "UNKNOWN";
+    $("brier-value").textContent=cleanNumber(evaluation.brier_oof,3);
+    $("source-authors").textContent=`EarthArXiv preprint · ${(source.authors || []).join(", ") || "Attribution unavailable"}.`;
+    $("source-version").textContent=`Version ${source.version || "UNKNOWN"} · ${source.license || "License UNKNOWN"}. Derived file checksums are listed below.`;
+    $("paper-link").href=safeLink(source.paper_url);
+    $("source-link").href=safeLink(source.doi);
+    const revision=runtime.build?.revision;
+    const revisionUrl=revision && /^[0-9a-f]{40}$/.test(revision) && safeLink(runtime.source_repository) ? `${safeLink(runtime.source_repository).replace(/\/$/,"")}/commit/${revision}` : "";
+    $("runtime-evidence").innerHTML=`<p>Evidence class: <strong>${esc(runtime.evidence_class || "UNKNOWN")}</strong></p><p class="revision-line">${revision ? externalLink(revisionUrl,revision) : "Source revision UNKNOWN"}</p><p class="evidence-description">${esc(runtime.binding_basis || "Source binding unavailable.")}</p>`;
+    $("evidence-limits").innerHTML=[
+      ["Independent replay",model.independent_replay || "UNAVAILABLE","A local fit and its reported evaluation do not establish independent replication."],
+      ["Training receipt",receipt.signature_status || "UNKNOWN","Hashes bind artifact bytes; an unsigned receipt does not establish signer identity."],
+      ["Trace authenticity",limits.trace_authentication || "UNAVAILABLE","An attachment’s shape can be checked without authenticating its source."],
+      ["New-region validation",limits.new_region_validation || "UNAVAILABLE",limits.reference_waveforms_available===false ? "Reference-panel waveforms are unavailable. New regions remain unvalidated." : "Check the evidence record for the supported scope."]
+    ].map(([title,status,description])=>`<article class="limit-card"><h3>${esc(title)}</h3><span class="badge neutral">${esc(status)}</span><p>${esc(description)}</p></article>`).join("");
+    const hashes=[...Object.entries(source.files_sha256 || {}).map(([name,hash])=>[name,hash]),["Model SHA-256",model.sha256],["Training receipt file SHA-256",receipt.sha256],["Training chain head SHA-256",receipt.chain_head_sha256]];
+    $("artifact-evidence").innerHTML=`<p>Training receipt evidence: <strong>${esc(receipt.evidence_class || "UNKNOWN")}</strong>. Values below identify the artifacts served by this application.</p><dl class="hash-list">${hashes.map(([name,hash])=>`<div><dt>${esc(name)}</dt><dd><code>${esc(hash || "UNKNOWN")}</code></dd></div>`).join("")}</dl>`;
+    $("evidence-status").textContent="Evidence record loaded. Evaluation, source binding and receipt identity retain their separate evidence classes.";
+  }catch(error){
+    if(requestSeq!==state.evidenceRequestSeq)return;
+    $("evidence-status").textContent=`Evidence unavailable: ${error.message}. Reload to try again.`;
+    $("evidence-status").classList.add("error");
+    $("model-evidence").innerHTML='<p class="availability">Model evidence UNKNOWN: the evidence endpoint could not be read.</p>';
+    $("runtime-evidence").textContent="Source binding UNKNOWN: evidence unavailable.";
+    $("source-authors").textContent="Source attribution UNKNOWN: evidence unavailable.";
+    $("source-version").textContent="Source version and license UNKNOWN: evidence unavailable.";
+    $("evidence-limits").replaceChildren();
+    $("artifact-evidence").textContent="Artifact hashes unavailable.";
+  }finally{if(requestSeq===state.evidenceRequestSeq)$("evidence-refresh").disabled=false;}
+}
+
 function recordRow(item) {
   const score = item.confirmability_score == null ? `<span class="badge neutral">${esc(item.score_status.replaceAll("_"," "))}</span>` : `<span class="badge score">${cleanNumber(item.confirmability_score,3)} · panel fit</span>`;
   return `<tr><td>${esc(item.event_id || "Blind case")}<span class="sub">${esc(item.id)}</span></td><td>${item.origin === "PUBLISHED_PANEL" ? "Published panel" : "Operator import"}</td><td>${esc(item.region)}<span class="sub">${esc(item.catalogue)}</span></td><td>${badge(item.published_consensus)}</td><td>${score}</td><td>${item.waveform_ready ? badge("Ready") : `<span class="badge neutral">Not attached</span>`}</td><td><button class="row-button" data-record="${esc(item.id)}">Inspect →</button></td></tr>`;
 }
 
-async function loadCatalogue() {
-  const imported = state.catalogue === "__imports__";
-  const params = new URLSearchParams({limit:String(state.limit), offset:String(state.offset)});
+function catalogueParams(){
+  const imported=state.catalogue==="__imports__";
+  const params=new URLSearchParams();
   if (imported) params.set("origin","imported");
   if (state.catalogue && !imported) params.set("catalogue",state.catalogue);
-  const data = await api(`/api/detections?${params}`);
-  const visibleTotal = data.total;
-  state.records = new Map(data.items.map(item => [item.id,item]));
-  $("detection-rows").innerHTML = data.items.length ? data.items.map(recordRow).join("") : `<tr><td colspan="7" class="empty">No records in this view.</td></tr>`;
-  $("page-status").textContent = visibleTotal ? `Showing ${state.offset+1}–${Math.min(state.offset+data.items.length,visibleTotal)} of ${visibleTotal} records` : "No records";
-  $("prev-button").disabled = state.offset === 0;
-  $("next-button").disabled = state.offset + state.limit >= visibleTotal;
-  document.querySelectorAll("[data-record]").forEach(button => button.addEventListener("click",() => openDetail(button.dataset.record,state.records.get(button.dataset.record)?.origin)));
+  if(state.query)params.set("q",state.query);
+  if(state.consensus)params.set("consensus",state.consensus);
+  return params;
+}
+
+function catalogueLoading(){
+  state.catalogueLoaded=false;
+  state.records.clear();
+  $("catalogue-results").setAttribute("aria-busy","true");
+  $("detection-rows").innerHTML='<tr><td colspan="7" class="empty">Loading matching records…</td></tr>';
+  $("page-status").textContent="Loading catalogue…";
+  $("prev-button").disabled=true;$("next-button").disabled=true;$("export-button").disabled=true;
+  $("clear-filters").disabled=!(state.query || state.catalogue || state.consensus);
+}
+
+async function loadCatalogue() {
+  clearTimeout(state.searchTimer);
+  const requestSeq=++state.catalogueRequestSeq,offset=state.offset;
+  const params=catalogueParams();
+  params.set("limit",String(state.limit));params.set("offset",String(offset));
+  catalogueLoading();
+  try{
+    const data=await api(`/api/detections?${params}`);
+    if(requestSeq!==state.catalogueRequestSeq)return;
+    const visibleTotal=data.total;
+    state.records=new Map(data.items.map(item=>[item.id,item]));
+    state.catalogueLoaded=true;
+    const filtered=Boolean(state.query || state.catalogue || state.consensus);
+    $("detection-rows").innerHTML=data.items.length ? data.items.map(recordRow).join("") : `<tr><td colspan="7" class="empty"><strong>No matching records</strong><p>${state.catalogue==="__imports__" && state.consensus ? "Published verdicts are unavailable for blind imports." : "Try a different query or catalogue."}</p>${filtered ? '<button class="btn btn-secondary btn-sm" id="empty-clear-filters" type="button">Clear filters</button>' : ""}</td></tr>`;
+    $("page-status").textContent=visibleTotal ? `Showing ${offset+1}–${Math.min(offset+data.items.length,visibleTotal)} of ${visibleTotal} matching records` : "0 matching records";
+    $("prev-button").disabled=offset===0;
+    $("next-button").disabled=offset+state.limit>=visibleTotal;
+    $("empty-clear-filters")?.addEventListener("click",()=>clearFilters(true));
+    document.querySelectorAll("[data-record]").forEach(button=>button.addEventListener("click",()=>openDetail(button.dataset.record,state.records.get(button.dataset.record)?.origin)));
+  }catch(error){
+    if(requestSeq!==state.catalogueRequestSeq)return;
+    $("detection-rows").innerHTML=`<tr><td colspan="7" class="empty"><strong>Catalogue unavailable</strong><p>${esc(error.message)}</p><button class="btn btn-secondary btn-sm" id="retry-catalogue" type="button">Try again</button></td></tr>`;
+    $("page-status").textContent="Catalogue could not be loaded. Try again or change filters.";
+    $("retry-catalogue").addEventListener("click",()=>{$("catalogue-heading").focus();loadCatalogue();});
+  }finally{
+    if(requestSeq===state.catalogueRequestSeq){$("catalogue-results").setAttribute("aria-busy","false");$("export-button").disabled=!state.catalogueLoaded || state.exportBusy;}
+  }
+}
+
+function clearFilters(focusSearch=false){
+  state.query="";state.catalogue="";state.consensus="";state.offset=0;
+  $("search-query").value="";$("catalogue-filter").value="";$("verdict-filter").value="";
+  if(focusSearch)$("search-query").focus();
+  loadCatalogue();
+}
+
+async function exportCatalogue(){
+  if(state.exportBusy || !state.catalogueLoaded)return;
+  // Capture filters once: changes during a download cannot change its query.
+  const params=catalogueParams(),filterDescription=params.toString() || "all visible cards";
+  const feedback=$("export-feedback");
+  state.exportBusy=true;$("export-button").disabled=true;
+  feedback.classList.remove("error");feedback.textContent="Preparing JSON export for the selected view…";
+  try{
+    const data=await api(`/api/export?${params}`);
+    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)+"\n"],{type:"application/json"}));
+    const anchor=document.createElement("a");anchor.href=url;anchor.download="szl-seismic-catalogue.json";
+    document.body.append(anchor);anchor.click();anchor.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    feedback.textContent=data.truncated ? `Downloaded ${data.count} of ${data.total} matching visible cards. Export is partial; the next offset is ${data.next_offset}. Requested view: ${filterDescription}.` : `Downloaded ${data.count} matching visible cards. Requested view: ${filterDescription}.`;
+  }catch(error){feedback.textContent=`Export failed: ${error.message}`;feedback.classList.add("error");}
+  finally{state.exportBusy=false;$("export-button").disabled=!state.catalogueLoaded;}
 }
 
 async function loadFilters() {
@@ -101,15 +203,22 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
   const requestSeq=++state.detailRequestSeq;
   const detailCredential=reviewerToken() || operatorToken();
   const reviewerCredential=reviewerToken();
+  const alreadyOpen=$("detail-drawer").classList.contains("open");
+  if(!alreadyOpen)state.returnFocus=document.activeElement;
   state.selected=id;
   state.selectedOrigin=origin;
   $("drawer-backdrop").hidden=false;
   $("detail-drawer").classList.add("open");
   $("detail-drawer").setAttribute("aria-hidden","false");
+  document.querySelector(".shell").inert=true;
+  document.body.classList.add("drawer-visible");
+  if(!alreadyOpen)$("close-drawer").focus();
   $("reviewer-access").hidden=origin!=="OPERATOR_IMPORT";
-  $("detail-content").innerHTML=`<p>Loading record…</p>`;
+  $("detail-content").setAttribute("aria-busy","true");
+  $("detail-content").innerHTML=`<p role="status">Loading record…</p>`;
   if(origin==="OPERATOR_IMPORT" && !detailCredential){
     $("detail-content").innerHTML=`<h2>Blind detection</h2><p class="warning">This imported case requires a reviewer token or a source custodian token. Enter a reviewer token above to inspect the blind traces, or add a source custodian token in Operator tools to attach missing waveforms.</p><p>Published records remain available without credentials.</p>`;
+    $("detail-content").setAttribute("aria-busy","false");
     return;
   }
   try{
@@ -121,14 +230,34 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
     if(notice){const message=document.createElement("p");message.className="success-note";message.textContent=notice;$("detail-content").prepend(message);}
     document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict,id,reviewerCredential,requestSeq)));
     $("attach-waveform")?.addEventListener("click",()=>attachWaveform(id,requestSeq));
-  }catch(error){if(activeDetail(id,requestSeq))$("detail-content").textContent=`Could not load record: ${error.message}`;}
+  }catch(error){if(activeDetail(id,requestSeq))$("detail-content").innerHTML=`<p role="alert">Could not load record: ${esc(error.message)}</p>`;}
+  finally{if(activeDetail(id,requestSeq))$("detail-content").setAttribute("aria-busy","false");}
 }
 
-function closeDetail(){++state.detailRequestSeq;state.selected=null;state.selectedOrigin=null;$("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;}
+function closeDetail(){
+  if(!$("detail-drawer").classList.contains("open"))return;
+  ++state.detailRequestSeq;state.selected=null;state.selectedOrigin=null;
+  $("detail-drawer").classList.remove("open");$("detail-drawer").setAttribute("aria-hidden","true");$("drawer-backdrop").hidden=true;
+  document.querySelector(".shell").inert=false;document.body.classList.remove("drawer-visible");
+  const target=state.returnFocus?.isConnected ? state.returnFocus : $("catalogue-heading");
+  target.focus();state.returnFocus=null;
+}
+
+function drawerKeyboard(event){
+  if(!$("detail-drawer").classList.contains("open"))return;
+  if(event.key==="Escape"){event.preventDefault();closeDetail();return;}
+  if(event.key!=="Tab")return;
+  const focusable=[...$("detail-drawer").querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]')].filter(element=>element.getClientRects().length);
+  const first=focusable[0],last=focusable[focusable.length-1];
+  if(!first){event.preventDefault();$("detail-drawer").focus();return;}
+  if(event.shiftKey && (document.activeElement===first || !$("detail-drawer").contains(document.activeElement))){event.preventDefault();last.focus();}
+  else if(!event.shiftKey && (document.activeElement===last || !$("detail-drawer").contains(document.activeElement))){event.preventDefault();first.focus();}
+}
 
 function clearDetailOnCredentialChange(){
   if(state.selectedOrigin==="OPERATOR_IMPORT" && state.selected){
     ++state.detailRequestSeq;
+    $("detail-content").setAttribute("aria-busy","false");
     $("detail-content").textContent="Credentials changed. Open this case again to refresh the blind view.";
   }
 }
@@ -179,23 +308,41 @@ async function importCatalogue(){
     const query=new URLSearchParams({catalogue,region});
     const result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(operatorToken()),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
     feedback.textContent=`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required.`;
-    feedback.classList.remove("error");state.offset=0;state.catalogue="__imports__";$("catalogue-filter").value="__imports__";await loadSummary();await loadCatalogue();
+    feedback.classList.remove("error");state.offset=0;state.catalogue="__imports__";state.query="";state.consensus="";$("catalogue-filter").value="__imports__";$("search-query").value="";$("verdict-filter").value="";await loadSummary();await loadCatalogue();
   }catch(error){feedback.textContent=error.message;feedback.classList.add("error");}finally{button.disabled=false;}
 }
 
 async function start(){
   $("close-drawer").addEventListener("click",closeDetail);$("drawer-backdrop").addEventListener("click",closeDetail);
-  document.addEventListener("keydown",event=>{if(event.key==="Escape")closeDetail();});
+  document.addEventListener("keydown",drawerKeyboard);
   $("open-reviewer-case").addEventListener("click",()=>{if(state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
   $("reviewer-token").addEventListener("keydown",event=>{if(event.key==="Enter" && state.selected)openDetail(state.selected,"OPERATOR_IMPORT");});
   $("reviewer-token").addEventListener("input",clearDetailOnCredentialChange);
   $("operator-token").addEventListener("input",clearDetailOnCredentialChange);
-  $("refresh-button").addEventListener("click",()=>Promise.all([loadSummary(),loadCatalogue()]));
+  $("refresh-button").addEventListener("click",async()=>{
+    $("refresh-button").disabled=true;
+    try{await Promise.all([loadSummary(),loadCatalogue()]);}catch(error){$("page-status").textContent=`Counts could not be refreshed: ${error.message}`;}
+    finally{$("refresh-button").disabled=false;}
+  });
+  $("catalogue-search").addEventListener("submit",event=>{event.preventDefault();clearTimeout(state.searchTimer);state.query=$("search-query").value.trim();state.offset=0;loadCatalogue();});
+  $("search-query").addEventListener("input",event=>{
+    clearTimeout(state.searchTimer);state.query=event.target.value.trim();state.offset=0;
+    ++state.catalogueRequestSeq;catalogueLoading();
+    state.searchTimer=setTimeout(loadCatalogue,250);
+  });
   $("catalogue-filter").addEventListener("change",event=>{state.catalogue=event.target.value;state.offset=0;loadCatalogue();});
+  $("verdict-filter").addEventListener("change",event=>{state.consensus=event.target.value;state.offset=0;loadCatalogue();});
+  $("clear-filters").addEventListener("click",()=>clearFilters(true));
+  $("export-button").addEventListener("click",exportCatalogue);
+  $("evidence-refresh").addEventListener("click",loadEvidence);
   $("prev-button").addEventListener("click",()=>{state.offset=Math.max(0,state.offset-state.limit);loadCatalogue();});
   $("next-button").addEventListener("click",()=>{state.offset+=state.limit;loadCatalogue();});
   $("import-button").addEventListener("click",importCatalogue);
-  try{await Promise.all([loadMeta(),loadSummary(),loadFilters()]);await loadCatalogue();}
-  catch(error){$("detection-rows").innerHTML=`<tr><td colspan="7" class="empty">Source unavailable: ${esc(error.message)}</td></tr>`;$("storage-state").textContent="Source unavailable";}
+  const results=await Promise.allSettled([loadMeta(),loadSummary(),loadFilters(),loadEvidence()]);
+  if(results.slice(0,3).some(result=>result.status==="rejected")){
+    $("storage-state").textContent="Source metadata unavailable";
+    $("source-state").textContent="Source metadata UNKNOWN";
+  }
+  await loadCatalogue();
 }
 start();
