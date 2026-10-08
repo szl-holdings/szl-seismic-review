@@ -95,7 +95,8 @@ button:disabled{cursor:not-allowed;opacity:.55}
 .empty>p{margin:8px 0 14px;font-family:var(--font-body);font-size:var(--text-sm)}
 
 /* ---------- Catalogue table ---------- */
-.table-wrap{background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;overflow:auto}
+/* Keep absolutely positioned screen-reader labels inside the table scroller. */
+.table-wrap{position:relative;background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;overflow:auto}
 .table-wrap .table{min-width:830px}
 .table th{background:var(--bg-deep);white-space:nowrap}
 .table td{vertical-align:middle;color:var(--text-sub)}
