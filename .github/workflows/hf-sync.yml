@@ -1,7 +1,7 @@
 name: Publish Seismic Review to Hugging Face
 
 # Sole application-file writer for SZLHOLDINGS/szl-seismic-review.
-# Dispatch only after the exact main commit has passed CI and CodeQL.
+# The readiness job verifies CI and CodeQL at the exact dispatched main commit.
 on:
   workflow_dispatch:
 
@@ -13,7 +13,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  readiness:
+    if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Require successful exact-source CI and CodeQL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: python scripts/check_release_readiness.py --sha "$SOURCE_SHA"
+
   publish:
+    needs: readiness
     if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
     uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy.yml@fc71ae973a0f31b8e9ee793fc8545a354448d451
     with:
@@ -25,7 +49,7 @@ jobs:
       source-revision-probe-path: /api/build-info
       require-default-branch-tip: true
       include-readme: true
-      smoke-paths: '["/", "/healthz", "/api/meta", "/api/summary", "/api/build-info"]'
+      smoke-paths: '["/", "/healthz", "/api/meta", "/api/summary", "/api/build-info", "/api/evidence"]'
       prune: false
       wait-running: 600
       restart-space: false

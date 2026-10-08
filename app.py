@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -65,9 +65,8 @@ async def bounded_body(request: Request, limit: int, label: str) -> bytes:
     return bytes(body)
 
 
-def read_csv(path: Path) -> list[dict]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+def read_csv_bytes(raw: bytes) -> list[dict]:
+    return list(csv.DictReader(io.StringIO(raw.decode("utf-8"), newline="")))
 
 
 def consensus(votes: list[str]) -> str:
@@ -79,11 +78,13 @@ def consensus(votes: list[str]) -> str:
     return "confirmed" if leaders[0] == "real" else "rejected"
 
 
-MANIFEST = json.loads((DATA / "source_manifest.json").read_text(encoding="utf-8"))
+MANIFEST = json.loads((DATA / "source_manifest.json").read_bytes())
+DATA_BYTES = {name: (DATA / name).read_bytes() for name in MANIFEST["derived_sha256"]}
 for name, expected in MANIFEST["derived_sha256"].items():
-    if digest_bytes((DATA / name).read_bytes()) != expected:
+    if digest_bytes(DATA_BYTES[name]) != expected:
         raise RuntimeError(f"fixture checksum mismatch: {name}")
-MODEL = json.loads(MODEL_PATH.read_text(encoding="utf-8"))
+MODEL_BYTES = MODEL_PATH.read_bytes()
+MODEL = json.loads(MODEL_BYTES)
 if MODEL["source_sha256"] != MANIFEST["derived_sha256"]:
     raise RuntimeError("model and fixture source hashes do not match")
 TRAINING_RECEIPT_PATHS = sorted((ROOT / "models/receipts").glob("train-*.json"))
@@ -91,22 +92,23 @@ if not TRAINING_RECEIPT_PATHS:
     raise RuntimeError("training receipt is missing")
 previous_receipt_hash = "0" * 64
 for expected_sequence, path in enumerate(TRAINING_RECEIPT_PATHS, start=1):
-    training_receipt = json.loads(path.read_text(encoding="utf-8"))
+    training_receipt_bytes = path.read_bytes()
+    training_receipt = json.loads(training_receipt_bytes)
     unsigned_fields = {key: value for key, value in training_receipt.items() if key != "receipt_sha256"}
     if (training_receipt["sequence"] != expected_sequence
             or training_receipt["previous_receipt_sha256"] != previous_receipt_hash
             or digest_bytes(canonical_json(unsigned_fields)) != training_receipt["receipt_sha256"]):
         raise RuntimeError("training receipt hash chain mismatch")
     previous_receipt_hash = training_receipt["receipt_sha256"]
-if (training_receipt["model_sha256"] != digest_bytes(MODEL_PATH.read_bytes())
+if (training_receipt["model_sha256"] != digest_bytes(MODEL_BYTES)
         or training_receipt["dataset_sha256"] != MANIFEST["derived_sha256"]
         or training_receipt["harness_sha256"] != digest_bytes(TRAINING_RECEIPT_PATHS[-1].with_suffix(".harness.py").read_bytes())
         or training_receipt["evaluation"] != MODEL["evaluation"]
         or training_receipt["seed"] != MODEL["training_seed"]
         or training_receipt["signature_status"] != "UNSIGNED"):
     raise RuntimeError("training receipt does not bind the served model and fixture")
-PANEL = read_csv(DATA / "japan_panel.csv")
-VERDICTS = read_csv(DATA / "japan_verdicts.csv")
+PANEL = read_csv_bytes(DATA_BYTES["japan_panel.csv"])
+VERDICTS = read_csv_bytes(DATA_BYTES["japan_verdicts.csv"])
 VOTES: dict[str, list[dict]] = defaultdict(list)
 for verdict in VERDICTS:
     VOTES[verdict["panel_id"]].append(verdict)
@@ -419,7 +421,7 @@ def imported_card(row: sqlite3.Row) -> dict:
     }
 
 
-app = FastAPI(title="SZL Seismic Review", version="0.1.0", docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title="SZL Seismic Review", version="0.2.0", docs_url="/api/docs", redoc_url=None)
 app.mount("/assets", StaticFiles(directory=ROOT / "frontend"), name="assets")
 
 
@@ -428,6 +430,8 @@ async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
     if request.url.path == "/api/docs":
         response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data: https://fastapi.tiangolo.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'; base-uri 'none'; object-src 'none'"
     else:
@@ -514,17 +518,85 @@ def receipts(authorization: str | None = Header(None)):
         return verify_write_receipts(db)
 
 
-@app.get("/api/detections")
-def detections(limit: int = Query(25, ge=1, le=200), offset: int = Query(0, ge=0),
-               catalogue: str | None = None, origin: str | None = Query(None, pattern="^(published|imported)$")):
+def catalogue_page(catalogue: str | None, origin: str | None, q: str,
+                   verdict: str | None, limit: int, offset: int) -> dict:
+    """Search only public card fields; never use hidden import metadata as an oracle."""
+    needle = q.strip().casefold()
     cards = [] if origin == "imported" else [
         published_card(identifier, row) for identifier, row in PUBLISHED.items()
         if not catalogue or row["source_catalog"] == catalogue]
-    with database() as db:
-        imports = db.execute("SELECT * FROM detections ORDER BY imported_at DESC").fetchall()
-    if not catalogue and origin != "published":
-        cards = [imported_card(row) for row in imports] + cards
-    return {"total": len(cards), "items": cards[offset : offset + limit]}
+    cards = [card for card in cards
+             if (not verdict or card["published_consensus"] == verdict)
+             and (not needle or any(needle in str(card[field]).casefold()
+                                    for field in ("id", "event_id", "catalogue")))]
+    imported_count, imports = 0, []
+    if not catalogue and origin != "published" and not verdict:
+        with database() as db:
+            imported_count = db.execute(
+                "SELECT COUNT(*) FROM detections WHERE instr(lower(id), ?) > 0", (needle,)
+            ).fetchone()[0]
+            imports = db.execute(
+                "SELECT id,waveform_sha256 FROM detections WHERE instr(lower(id), ?) > 0 "
+                "ORDER BY imported_at DESC,id LIMIT ? OFFSET ?", (needle, limit, offset)
+            ).fetchall()
+    published_offset = max(0, offset - imported_count)
+    items = [imported_card(row) for row in imports] + cards[published_offset:published_offset + limit - len(imports)]
+    return {"total": imported_count + len(cards), "items": items, "offset": offset, "limit": limit}
+
+
+@app.get("/api/detections")
+def detections(limit: int = Query(25, ge=1, le=200), offset: int = Query(0, ge=0),
+               catalogue: str | None = Query(None, max_length=100),
+               origin: str | None = Query(None, pattern="^(published|imported)$"),
+               q: str = Query("", max_length=100),
+               consensus: str | None = Query(None, pattern="^(confirmed|rejected|unresolved)$")):
+    return catalogue_page(catalogue, origin, q, consensus, limit, offset)
+
+
+@app.get("/api/export")
+def export_catalogue(catalogue: str | None = Query(None, max_length=100),
+                     origin: str | None = Query(None, pattern="^(published|imported)$"),
+                     q: str = Query("", max_length=100),
+                     consensus: str | None = Query(None, pattern="^(confirmed|rejected|unresolved)$"),
+                     limit: int = Query(10_000, ge=1, le=10_000), offset: int = Query(0, ge=0)):
+    page = catalogue_page(catalogue, origin, q, consensus, limit, offset)
+    count = len(page["items"])
+    remaining = offset + count < page["total"]
+    return JSONResponse({
+        "schema": "szl.seismic.catalogue-export/v1", "evidence_class": "DECLARED",
+        "exported_at": utc_now(), "query": {"catalogue": catalogue, "origin": origin,
+                                           "q": q, "consensus": consensus},
+        "source_doi": SOURCE_URL, "source_license": MANIFEST["source_license"],
+        "model_id": MODEL["id"], "model_evidence_class": MODEL["evidence_class"],
+        "scope": "Public catalogue cards only; imported case metadata and waveforms stay hidden",
+        "total": page["total"], "count": count, "offset": offset,
+        "next_offset": offset + count if remaining else None, "truncated": remaining,
+        "items": page["items"], "receipt_minted": False,
+    }, headers={"Content-Disposition": 'attachment; filename="szl-seismic-catalogue.json"'})
+
+
+@app.get("/api/evidence")
+def evidence():
+    return {
+        "schema": "szl.seismic.evidence/v1",
+        "source": {"doi": SOURCE_URL, "paper_url": EARTHARXIV_URL,
+                   "version": MANIFEST["source_version"], "license": MANIFEST["source_license"],
+                   "authors": MANIFEST["source_authors"], "files_sha256": MANIFEST["derived_sha256"]},
+        "model": {"id": MODEL["id"], "sha256": digest_bytes(MODEL_BYTES),
+                  "features": MODEL["features"], "evidence_class": MODEL["evidence_class"],
+                  "evaluation": MODEL["evaluation"], "claim": MODEL["claim"],
+                  "training_cases": MODEL["n_train"], "independent_replay": "UNAVAILABLE",
+                  "three_feature_baseline": MODEL["three_feature_baseline"],
+                  "input_contract": INPUT_CONTRACT_V1},
+        "training_receipt": {"sha256": digest_bytes(training_receipt_bytes),
+                             "chain_head_sha256": training_receipt["receipt_sha256"],
+                             "signature_status": training_receipt["signature_status"],
+                             "evidence_class": training_receipt["evidence_class"]},
+        "runtime": build_info(),
+        "limits": {"reference_waveforms_available": False, "trace_authentication": "UNAVAILABLE",
+                   "new_region_validation": "UNAVAILABLE"},
+        "receipt_minted": False,
+    }
 
 
 @app.get("/api/detections/{detection_id}")

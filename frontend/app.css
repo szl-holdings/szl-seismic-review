@@ -82,8 +82,21 @@ a.btn-secondary:hover{color:var(--text)}
 .section-controls{display:flex;gap:8px;align-items:center}
 .section-controls .select{inline-size:auto;min-width:155px}
 
+/* ---------- Search and export ---------- */
+.catalogue-toolbar{display:grid;grid-template-columns:minmax(220px,1.5fr) minmax(160px,1fr) minmax(160px,1fr) auto;align-items:end;gap:12px;background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg);padding:16px}
+.filter-field{min-width:0;display:grid;gap:6px}
+.filter-field label{color:var(--text-sub);font-size:var(--text-sm);font-weight:var(--weight-semibold)}
+.filter-field .input,.filter-field .select{inline-size:100%;min-width:0;margin:0}
+.catalogue-toolbar .btn{min-height:2.5rem}
+.filter-help{color:var(--text-ghost);font-size:var(--text-xs);margin:8px 0 4px}
+#export-feedback{margin:4px 0 10px;overflow-wrap:anywhere}
+button:disabled{cursor:not-allowed;opacity:.55}
+.empty>strong{display:block;color:var(--text);font-size:var(--text-base)}
+.empty>p{margin:8px 0 14px;font-family:var(--font-body);font-size:var(--text-sm)}
+
 /* ---------- Catalogue table ---------- */
-.table-wrap{background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;overflow:auto}
+/* Keep absolutely positioned screen-reader labels inside the table scroller. */
+.table-wrap{position:relative;background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg) var(--radius-lg) 0 0;overflow:auto}
 .table-wrap .table{min-width:830px}
 .table th{background:var(--bg-deep);white-space:nowrap}
 .table td{vertical-align:middle;color:var(--text-sub)}
@@ -107,23 +120,44 @@ td .sub{display:block;font-family:var(--font-mono);font-size:var(--text-xs);colo
 .pager:disabled{opacity:.5;cursor:not-allowed}
 
 /* ---------- Method and evidence panels ---------- */
-.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:0 0 34px}
+.two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:0 0 34px}
+.two-col>*,.operator-grid>*,.source-step>*,.hash-list>div>*{min-inline-size:0}
 .panel{background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg);padding:27px 30px}
 .panel h2{line-height:var(--leading-snug);margin-bottom:12px}
 .stat-line{display:flex;justify-content:space-between;gap:12px;border-bottom:var(--border-hairline) solid var(--border-subtle);padding:11px 0;color:var(--text-sub)}
 .stat-line strong{color:var(--text);font-family:var(--font-mono);font-weight:var(--weight-semibold);font-variant-numeric:tabular-nums lining-nums}
 .note,.warning{border:var(--border-hairline) solid color-mix(in srgb, var(--ink-warn) 40%, transparent);border-radius:var(--radius-md);background:color-mix(in srgb, var(--ink-warn) 6%, transparent);padding:10px 13px;font-size:var(--text-base);color:var(--text)}
 .panel .note{color:var(--text);margin-top:17px}
-.source-step{display:grid;grid-template-columns:30px 1fr;gap:12px;padding:14px 0;border-top:var(--border-hairline) solid var(--border-subtle)}
+.source-step{display:grid;grid-template-columns:30px minmax(0,1fr);gap:12px;padding:14px 0;border-top:var(--border-hairline) solid var(--border-subtle)}
 .source-step>span{color:var(--text-ghost);font-family:var(--font-mono);font-size:var(--text-xs);font-variant-numeric:tabular-nums lining-nums;padding-top:3px}
 .source-step strong{display:block;color:var(--text)}
 .source-step p{margin:3px 0}
 .source-step a,.guide a{font-weight:var(--weight-semibold);font-size:var(--text-sm)}
+.evidence-description{color:var(--text-sub);font-size:var(--text-sm);line-height:var(--leading-normal)}
+.feature-details{margin-top:16px;border-top:var(--border-hairline) solid var(--border-subtle);padding-top:12px}
+.feature-details summary,.hash-details summary{cursor:pointer;font-size:var(--text-sm);font-weight:var(--weight-semibold);border-radius:var(--radius-sm);padding:5px 0}
+.feature-list{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:12px 0}
+.feature-list li{border:var(--border-hairline) solid var(--border);border-radius:var(--radius-sm);background:var(--surface-alt);padding:3px 7px;font-size:var(--text-xs)}
+.feature-details code,.revision-line{overflow-wrap:anywhere;font-size:var(--text-xs)}
+.revision-line{font-family:var(--font-mono)}
+.evidence-json{display:inline-flex;align-items:center;min-height:2.25rem;margin-top:8px;font-size:var(--text-sm);font-weight:var(--weight-semibold)}
+.evidence-record{background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg);padding:27px 30px}
+.evidence-limits{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}
+.limit-card{background:var(--surface-alt);border:var(--border-hairline) solid var(--border-subtle);border-radius:var(--radius-md);padding:16px;min-width:0}
+.limit-card h3{font-size:var(--text-sm);margin:0 0 10px}
+.limit-card p{font-size:var(--text-xs);line-height:var(--leading-normal);color:var(--text-sub);margin:10px 0 0}
+.limit-card .badge{max-width:100%;white-space:normal;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:var(--text-xs)}
+.hash-details{border-top:var(--border-hairline) solid var(--border);padding-top:10px}
+.hash-details>div>p{font-size:var(--text-sm);color:var(--text-sub)}
+.hash-list{margin:12px 0 0}
+.hash-list>div{display:grid;grid-template-columns:minmax(140px,.7fr) minmax(0,2fr);gap:16px;padding:10px 0;border-top:var(--border-hairline) solid var(--border-subtle)}
+.hash-list dt{color:var(--text-sub);font-size:var(--text-xs);overflow-wrap:anywhere}
+.hash-list dd{margin:0;font-family:var(--font-mono);font-size:var(--text-xs);overflow-wrap:anywhere;color:var(--text)}
 
 /* ---------- Operator ---------- */
 .operator{background:var(--surface);border:var(--border-hairline) solid var(--border);border-radius:var(--radius-lg);padding:27px 30px}
 .operator .section-head{margin-bottom:22px}
-.operator-grid{display:grid;grid-template-columns:1fr 1fr;gap:30px}
+.operator-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:30px}
 .operator-card{display:flex;flex-direction:column;gap:7px}
 .operator-card h3{margin:0 0 10px;font-size:var(--text-lg);color:var(--text)}
 .operator-card label{color:var(--text-sub);font-size:var(--text-sm);font-weight:var(--weight-semibold)}
@@ -139,10 +173,12 @@ td .sub{display:block;font-family:var(--font-mono);font-size:var(--text-xs);colo
 footer{color:var(--text-ghost);font-size:var(--text-xs);padding:10px 0}
 
 /* ---------- Detail drawer (console .drawer / .scrim / .close-btn) ---------- */
-/* Closed: off-canvas, no shadow bleeding into the page, and out of the tab order and
-   accessibility tree once the slide-out finishes (visibility flips after the transform). */
-.drawer{display:flex;flex-direction:column;overflow:hidden;animation:none;transform:translateX(102%);visibility:hidden;box-shadow:none;transition:transform var(--duration-base) var(--ease-standard),visibility 0s linear var(--duration-base),box-shadow 0s linear var(--duration-base)}
-.drawer.open{transform:translateX(0);visibility:visible;box-shadow:var(--shadow-xl);transition:transform var(--duration-base) var(--ease-standard)}
+/* Keep the fixed drawer inside the viewport while closed: translating it beyond
+   the right edge enlarges document scroll width in Chromium after a resize.
+   Clip only the closed drawer; its open content retains normal internal scrolling. */
+.drawer{display:flex;flex-direction:column;overflow:hidden;animation:none;transform:none;clip-path:inset(0 0 0 100%);visibility:hidden;box-shadow:none;transition:clip-path var(--duration-base) var(--ease-standard),visibility 0s linear var(--duration-base),box-shadow 0s linear var(--duration-base)}
+.drawer.open{clip-path:inset(0);visibility:visible;box-shadow:var(--shadow-xl);transition:clip-path var(--duration-base) var(--ease-standard)}
+.drawer-visible{overflow:hidden}
 .drawer-top{align-items:center}
 .drawer-top .eyebrow{margin:0}
 .drawer-body{padding:25px 27px;overflow:auto}
@@ -199,3 +235,6 @@ footer{color:var(--text-ghost);font-size:var(--text-xs);padding:10px 0}
 @media(max-width:1080px){.hero{grid-template-columns:1fr}.hero-graphic.code{min-height:170px;flex-direction:column;align-items:stretch;justify-content:center;gap:var(--space-3)}.wave-label,.wave-foot{position:static}.wave-foot{flex-wrap:wrap}.hero-graphic svg{height:100px}.metrics{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.sidebar{inline-size:100%;width:100%;height:55px;flex-direction:row;align-items:center;padding:0 14px;border-right:0;border-bottom:var(--border-hairline) solid var(--border-subtle)}.brand{margin:0;white-space:nowrap}.brand strong{font-size:var(--text-xs)}.brand-mark{width:28px;height:28px}.sidebar .nav-item,.sidebar .nav-label,.sidebar-bottom{display:none}.content{margin:55px 0 0;padding:0 16px 24px}.topbar{min-height:50px}.breadcrumb{font-size:var(--text-xs)}.hero>div:first-child{padding:30px 24px}.hero h1{font-size:var(--text-3xl)}.hero-graphic.code{min-height:140px;padding:20px}.metrics{gap:8px;margin-bottom:28px}.metric.stat{padding:15px;min-height:110px}.metric .metric__value{font-size:var(--text-2xl)}.section-head{align-items:start;flex-direction:column}.two-col,.operator-grid{grid-template-columns:1fr}.operator{padding:22px}.panel{padding:22px}.top-status{font-size:var(--text-xs)}}
 @media(max-width:520px){.access-row{flex-wrap:wrap}.access-row .input{flex-basis:100%}}
+@media(max-width:1200px){.catalogue-toolbar{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.search-field{grid-column:1/-1}.catalogue-toolbar .btn{justify-self:start}.evidence-limits{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.section-controls{flex-wrap:wrap;width:100%}.evidence-record{padding:22px}.evidence-limits{gap:8px}.stat-line{flex-wrap:wrap}.stat-line strong{overflow-wrap:anywhere}.table-foot{flex-wrap:wrap}.catalogue-toolbar{padding:12px}.filter-help{line-height:var(--leading-normal)}.two-col,.operator-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:440px){.catalogue-toolbar,.evidence-limits{grid-template-columns:minmax(0,1fr)}.search-field{grid-column:auto}.catalogue-toolbar .btn{justify-self:stretch}.hash-list>div{grid-template-columns:minmax(0,1fr);gap:4px}.section-controls .btn{flex:1}}
