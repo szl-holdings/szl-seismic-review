@@ -1,7 +1,6 @@
 """Integration checks for provenance and the blind-review boundary."""
 
 import csv
-import json
 import sys
 from pathlib import Path
 
