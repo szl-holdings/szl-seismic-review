@@ -39,11 +39,15 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Verify catalogue and evidence in Chromium
         run: python tests/browser_smoke.py --output-dir artifacts/browser
+      - name: Verify acknowledged writes survive refresh failures
+        run: python tests/browser_write_outcomes.py --output-dir artifacts/browser-write-outcomes
       - name: Retain browser evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: seismic-browser-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/browser/
+          path: |
+            artifacts/browser/
+            artifacts/browser-write-outcomes/
           if-no-files-found: warn
           retention-days: 7
