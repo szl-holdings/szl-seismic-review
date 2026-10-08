@@ -1,5 +1,5 @@
 /* SZL Seismic Review UI. Credentials live only in this page's input elements. */
-const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", query:"", consensus:"", catalogueRequestSeq:0, catalogueLoaded:false, exportBusy:false, searchTimer:null, evidenceRequestSeq:0, selected:null, selectedOrigin:null, detailRequestSeq:0, returnFocus:null, records:new Map()};
+const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", query:"", consensus:"", catalogueRequestSeq:0, catalogueLoaded:false, exportBusy:false, searchTimer:null, evidenceRequestSeq:0, selected:null, selectedOrigin:null, detailRequestSeq:0, returnFocus:null, records:new Map(), reviewerEpoch:0, writeOutcomes:new Map(), importBusy:false, importOutcome:null};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const cleanNumber = (value, digits=2) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
@@ -128,11 +128,13 @@ async function loadCatalogue() {
     $("next-button").disabled=offset+state.limit>=visibleTotal;
     $("empty-clear-filters")?.addEventListener("click",()=>clearFilters(true));
     document.querySelectorAll("[data-record]").forEach(button=>button.addEventListener("click",()=>openDetail(button.dataset.record,state.records.get(button.dataset.record)?.origin)));
+    return true;
   }catch(error){
     if(requestSeq!==state.catalogueRequestSeq)return;
     $("detection-rows").innerHTML=`<tr><td colspan="7" class="empty"><strong>Catalogue unavailable</strong><p>${esc(error.message)}</p><button class="btn btn-secondary btn-sm" id="retry-catalogue" type="button">Try again</button></td></tr>`;
     $("page-status").textContent="Catalogue could not be loaded. Try again or change filters.";
     $("retry-catalogue").addEventListener("click",()=>{$("catalogue-heading").focus();loadCatalogue();});
+    return false;
   }finally{
     if(requestSeq===state.catalogueRequestSeq){$("catalogue-results").setAttribute("aria-busy","false");$("export-button").disabled=!state.catalogueLoaded || state.exportBusy;}
   }
@@ -216,9 +218,11 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
   $("reviewer-access").hidden=origin!=="OPERATOR_IMPORT";
   $("detail-content").setAttribute("aria-busy","true");
   $("detail-content").innerHTML=`<p role="status">Loading record…</p>`;
+  showAcknowledgedWrites(id,requestSeq);
   if(origin==="OPERATOR_IMPORT" && !detailCredential){
     $("detail-content").innerHTML=`<h2>Blind detection</h2><p class="warning">This imported case requires a reviewer token or a source custodian token. Enter a reviewer token above to inspect the blind traces, or add a source custodian token in Operator tools to attach missing waveforms.</p><p>Published records remain available without credentials.</p>`;
     $("detail-content").setAttribute("aria-busy","false");
+    showAcknowledgedWrites(id,requestSeq);
     return;
   }
   try{
@@ -230,7 +234,9 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
     if(notice){const message=document.createElement("p");message.className="success-note";message.textContent=notice;$("detail-content").prepend(message);}
     document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict,id,reviewerCredential,requestSeq)));
     $("attach-waveform")?.addEventListener("click",()=>attachWaveform(id,requestSeq));
-  }catch(error){if(activeDetail(id,requestSeq))$("detail-content").innerHTML=`<p role="alert">Could not load record: ${esc(error.message)}</p>`;}
+    showAcknowledgedWrites(id,requestSeq);
+    return true;
+  }catch(error){if(activeDetail(id,requestSeq)){$("detail-content").innerHTML=`<p role="alert">Could not load record: ${esc(error.message)}</p>`;showAcknowledgedWrites(id,requestSeq,"Case detail could not be refreshed.");}return false;}
   finally{if(activeDetail(id,requestSeq))$("detail-content").setAttribute("aria-busy","false");}
 }
 
@@ -254,7 +260,8 @@ function drawerKeyboard(event){
   else if(!event.shiftKey && (document.activeElement===last || !$("detail-drawer").contains(document.activeElement))){event.preventDefault();first.focus();}
 }
 
-function clearDetailOnCredentialChange(){
+function clearDetailOnCredentialChange(event){
+  if(event?.target.id==="reviewer-token")++state.reviewerEpoch;
   if(state.selectedOrigin==="OPERATOR_IMPORT" && state.selected){
     ++state.detailRequestSeq;
     $("detail-content").setAttribute("aria-busy","false");
@@ -262,21 +269,67 @@ function clearDetailOnCredentialChange(){
   }
 }
 
+function reviewOutcomeKey(id,epoch=state.reviewerEpoch){return `review:${epoch}:${id}`;}
+function detailWriteOutcomes(id){return [state.writeOutcomes.get(reviewOutcomeKey(id)),state.writeOutcomes.get(`waveform:${id}`)].filter(Boolean);}
+
+function showAcknowledgedWrites(id,requestSeq,detailError=""){
+  if(!activeDetail(id,requestSeq))return;
+  $("acknowledged-writes")?.remove();
+  const outcomes=detailWriteOutcomes(id);
+  if(!outcomes.length)return;
+  const container=document.createElement("div");container.id="acknowledged-writes";container.setAttribute("role","status");
+  outcomes.forEach(outcome=>{const message=document.createElement("p");message.className="success-note";message.textContent=outcome.notice;container.append(message);});
+  if(state.writeOutcomes.has(reviewOutcomeKey(id)))document.querySelectorAll("[data-verdict]").forEach(button=>button.disabled=true);
+  if(state.writeOutcomes.has(`waveform:${id}`) && $("attach-waveform"))$("attach-waveform").disabled=true;
+  const errors=[...new Set([...outcomes.map(outcome=>outcome.refreshError).filter(Boolean),detailError].filter(Boolean))];
+  if(errors.length){
+    const warning=document.createElement("p");warning.className="warning";warning.textContent=`The write was acknowledged; ${errors.join(" ")} Retry refresh only; do not submit the write again.`;container.append(warning);
+    const retry=document.createElement("button");retry.id="retry-write-refresh";retry.type="button";retry.className="btn btn-secondary btn-sm";retry.textContent="Retry refresh";
+    retry.addEventListener("click",()=>{if(activeDetail(id,requestSeq)){retry.disabled=true;refreshAfterWrite(outcomes[outcomes.length-1],id,requestSeq);}});container.append(retry);
+  }
+  $("detail-content").prepend(container);
+}
+
+async function refreshOverviewAfterWrite(){
+  const results=await Promise.allSettled([loadCatalogue(),loadSummary()]);
+  const errors=[];
+  if(results[0].status==="rejected" || results[0].value===false)errors.push("Catalogue could not be refreshed.");
+  if(results[1].status==="rejected")errors.push("Summary counts could not be refreshed.");
+  return errors;
+}
+
+async function refreshAfterWrite(outcome,id,requestSeq){
+  // POST acknowledgement survives every subsequent GET failure. Reads cannot
+  // re-enable a locked write, and the retry callback invokes only these GETs.
+  const overview=refreshOverviewAfterWrite();
+  const detail=activeDetail(id,requestSeq) ? openDetail(id,"OPERATOR_IMPORT") : Promise.resolve();
+  const refreshSeq=state.detailRequestSeq;
+  const [errors,detailResult]=await Promise.all([overview,detail]);
+  if(detailResult===false)errors.push("Case detail could not be refreshed.");
+  outcome.refreshError=errors.join(" ");
+  // Clear stale refresh warnings for the same case after a successful retry.
+  detailWriteOutcomes(id).forEach(item=>item.refreshError=outcome.refreshError);
+  if(activeDetail(id,refreshSeq))showAcknowledgedWrites(id,refreshSeq);
+}
+
 async function submitReview(verdict,caseId,credential,requestSeq){
-  if(!activeDetail(caseId,requestSeq))return;
+  const outcomeKey=reviewOutcomeKey(caseId);
+  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(outcomeKey))return;
   const note=$("review-note").value.trim(),feedback=$("review-feedback");
   if(!credential || reviewerToken()!==credential){feedback.textContent="Reopen this case with the reviewer token shown above.";feedback.classList.add("error");return;}
   const buttons=[...document.querySelectorAll("[data-verdict]")];buttons.forEach(button=>button.disabled=true);
   feedback.textContent="Locking verdict…";feedback.classList.remove("error");
   try{
     await api("/api/reviews",{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body:JSON.stringify({detection_id:caseId,verdict,note})});
-    await Promise.all([loadCatalogue(),loadSummary()]);
-    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT","Verdict locked for the reviewer identity bound to this token.");
-  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}}
+  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}return;}
+  const outcome={notice:"Verdict locked for the reviewer identity bound to this token.",refreshError:""};
+  state.writeOutcomes.set(outcomeKey,outcome);
+  showAcknowledgedWrites(caseId,requestSeq);
+  await refreshAfterWrite(outcome,caseId,requestSeq);
 }
 
 async function attachWaveform(caseId,requestSeq){
-  if(!activeDetail(caseId,requestSeq))return;
+  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(`waveform:${caseId}`))return;
   const credential=operatorToken();
   const feedback=$("waveform-feedback"),file=$("waveform-file").files[0];
   feedback.classList.remove("error");
@@ -292,24 +345,44 @@ async function attachWaveform(caseId,requestSeq){
   if(!activeDetail(caseId,requestSeq))return;
   const button=$("attach-waveform");button.disabled=true;
   feedback.textContent="Attaching and locking waveform evidence…";
-  try{
-    const result=await api(`/api/detections/${encodeURIComponent(caseId)}/waveform`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body});
-    await Promise.all([loadCatalogue(),loadSummary()]);
-    if(activeDetail(caseId,requestSeq))await openDetail(caseId,"OPERATOR_IMPORT",`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`);
-  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}}
+  let result;
+  try{result=await api(`/api/detections/${encodeURIComponent(caseId)}/waveform`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body});}
+  catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}return;}
+  const outcome={notice:`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`,refreshError:""};
+  state.writeOutcomes.set(`waveform:${caseId}`,outcome);
+  showAcknowledgedWrites(caseId,requestSeq);
+  await refreshAfterWrite(outcome,caseId,requestSeq);
+}
+
+function showImportOutcome(outcome){
+  if(state.importOutcome!==outcome)return;
+  const feedback=$("import-feedback");feedback.classList.remove("error");feedback.textContent=outcome.notice;
+  if(outcome.refreshError){
+    feedback.append(document.createTextNode(` The import was acknowledged; ${outcome.refreshError} Retry refresh only.`));
+    const retry=document.createElement("button");retry.id="retry-import-refresh";retry.type="button";retry.className="btn btn-secondary btn-sm";retry.textContent="Retry refresh";
+    retry.addEventListener("click",async()=>{retry.disabled=true;outcome.refreshError=(await refreshOverviewAfterWrite()).join(" ");showImportOutcome(outcome);});feedback.append(retry);
+  }
 }
 
 async function importCatalogue(){
+  if(state.importBusy)return;
   const file=$("import-file").files[0],catalogue=$("import-catalogue").value.trim(),region=$("import-region").value.trim(),feedback=$("import-feedback");
   if(!operatorToken()){feedback.textContent="Enter a source custodian token.";feedback.classList.add("error");return;}
   if(!file||!catalogue||!region){feedback.textContent="Choose a CSV and enter catalogue and region.";feedback.classList.add("error");return;}
-  const button=$("import-button");button.disabled=true;feedback.textContent="Importing catalogue…";feedback.classList.remove("error");
+  const credential=operatorToken(),button=$("import-button");state.importBusy=true;button.disabled=true;feedback.textContent="Importing catalogue…";feedback.classList.remove("error");
+  let result;
   try{
     const query=new URLSearchParams({catalogue,region});
-    const result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(operatorToken()),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
-    feedback.textContent=`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required.`;
-    feedback.classList.remove("error");state.offset=0;state.catalogue="__imports__";state.query="";state.consensus="";$("catalogue-filter").value="__imports__";$("search-query").value="";$("verdict-filter").value="";await loadSummary();await loadCatalogue();
-  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");}finally{button.disabled=false;}
+    result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
+  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");state.importBusy=false;button.disabled=false;return;}
+  const outcome={notice:`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required. Select a new file for another import.`,refreshError:""};
+  state.importOutcome=outcome;
+  if($("import-file").files[0]===file)$("import-file").value="";
+  showImportOutcome(outcome);
+  state.offset=0;state.catalogue="__imports__";state.query="";state.consensus="";$("catalogue-filter").value="__imports__";$("search-query").value="";$("verdict-filter").value="";
+  outcome.refreshError=(await refreshOverviewAfterWrite()).join(" ");
+  showImportOutcome(outcome);state.importBusy=false;
+  button.disabled=!state.meta.import_enabled || !$("import-file").files.length;
 }
 
 async function start(){
@@ -338,6 +411,7 @@ async function start(){
   $("prev-button").addEventListener("click",()=>{state.offset=Math.max(0,state.offset-state.limit);loadCatalogue();});
   $("next-button").addEventListener("click",()=>{state.offset+=state.limit;loadCatalogue();});
   $("import-button").addEventListener("click",importCatalogue);
+  $("import-file").addEventListener("change",()=>{$("import-button").disabled=state.importBusy || !state.meta?.import_enabled || !$("import-file").files.length;});
   const results=await Promise.allSettled([loadMeta(),loadSummary(),loadFilters(),loadEvidence()]);
   if(results.slice(0,3).some(result=>result.status==="rejected")){
     $("storage-state").textContent="Source metadata unavailable";

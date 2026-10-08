@@ -40,6 +40,8 @@ python -m uvicorn app:app --host 127.0.0.1 --port 7860
 
 Open `http://127.0.0.1:7860`. The service is read-only unless credentials are configured. Set `SZL_REVIEW_WRITE_TOKEN` for the source custodian's import and waveform attachment actions, and `SZL_REVIEWER_TOKENS_JSON` to a JSON object mapping each reviewer ID to a **distinct** bearer token. The service refuses duplicate reviewer tokens or a reviewer token equal to the custodian token. Set `SZL_REVIEW_DB_PATH` to controlled, durable storage before retaining real reviews. Keep credentials in a secret manager; do not put them in this repository, a URL, or browser storage. The UI holds entered tokens only in current page memory. A custodian who sees the source CSV is not an independent blind reviewer; use separate people and stronger identity and storage controls before a formal multi-person study.
 
+An acknowledged import, waveform attachment or verdict stays recorded as successful in the UI if a later read refresh fails. Refresh controls retry only reads; they do not resubmit the write. A successful import clears the selected file before another import can be submitted.
+
 The import CSV header is:
 
 ```text
@@ -107,7 +109,10 @@ Browser regressions run in CI against a temporary read-only service. To run them
 python -m pip install -r requirements-browser.txt
 python -m playwright install chromium
 python tests/browser_smoke.py
+python tests/browser_write_outcomes.py
 ```
+
+The write-outcome browser regressions use **SIMULATED** intercepted write responses and read failures against an isolated read-only service. They verify UI recovery and duplicate-submission prevention, not a real operator transaction or scientific result.
 
 `Dockerfile` serves port 7860 for Hugging Face Spaces. No application credential is required to use the public read-only viewer. The local operator database is excluded from Git and the Docker build. Publication requires a separate Hugging Face publisher credential.
 
@@ -120,6 +125,14 @@ Before the first dispatch, provision a **public Docker Space on CPU Basic** name
 After the exact merged source has passed CI and CodeQL, dispatch **Publish Seismic Review to Hugging Face** on `main`. Its readiness job verifies the current main SHA, the latest successful push runs and required jobs for that SHA, any separate trusted CodeQL result checks, and a readable zero-open-alert CodeQL inventory for main. A failed or pending check, unresolved alert, unreadable API, incomplete inventory or moved source blocks publication. The pinned CodeQL analysis action waits for SARIF processing before completing. A successful analysis upload alone is insufficient.
 
 The publisher then generates an untracked `SOURCE_REVISION` file, mirrors the exact source bytes, sets and reads back `SZL_SOURCE_REVISION`, and checks the immutable Hub revision, running revision, payload hashes, and the declared application routes, including `/api/evidence`. `/api/build-info` reports a source match only when the baked file and runtime variable agree; it does not mint a receipt on GET. Keep the resulting GitHub run, source SHA, Hub SHA, deployment manifest, and runtime probe together in the release record. A workflow definition or a successful source test alone does not establish publication or runtime verification.
+
+After publication, a separate `verify-runtime` job performs credential-free public GETs with `scripts/verify_deployment.py`. It checks the running Hub revision, GitHub source binding, frontend bytes, model/data/receipt identities, retained scientific limits, public search and export behavior, and read-only configuration. Source and Hub revisions are read again at the end to detect a deployment changing during verification. The job retains its JSON report on success and failure. A failed check makes the workflow fail; publication may already have happened, so inspect both jobs before deciding the release state. This is a separate observation from the uploader by the same operator, not independent-party replication or certification.
+
+Run the same check from the exact published checkout:
+
+```bash
+python scripts/verify_deployment.py --sha <full-published-GitHub-SHA> --output artifacts/runtime-verification.json
+```
 
 For a local Docker build from a clean checkout, create the same untracked ASCII source file explicitly before building:
 
