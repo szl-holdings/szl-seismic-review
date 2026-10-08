@@ -255,6 +255,14 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                     await page.set_viewport_size({"width": width, "height": height})
                     await page.locator("#catalogue-heading").scroll_into_view_if_needed()
                     dimensions = await page.evaluate("() => ({scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth})")
+                    if dimensions["scroll"] > dimensions["viewport"] + 1:
+                        report["overflow_elements"] = await page.evaluate("""() => [...document.querySelectorAll('body *')].map(element => {
+                            const box = element.getBoundingClientRect(), style = getComputedStyle(element);
+                            return {tag: element.tagName, id: element.id, classes: element.className,
+                                    left: box.left, right: box.right, width: box.width,
+                                    overflow: style.overflowX, visibility: style.visibility, minWidth: style.minWidth};
+                        }).filter(box => box.right > document.documentElement.clientWidth + 1).slice(0, 40)""")
+                        print(json.dumps({"viewport": name, "overflow_elements": report["overflow_elements"]}), flush=True)
                     assert dimensions["scroll"] <= dimensions["viewport"] + 1, f"{name} document overflow: {dimensions}"
                     await expect(page.locator("#search-query")).to_be_visible()
                     await expect(page.locator("#verdict-filter")).to_be_visible()
