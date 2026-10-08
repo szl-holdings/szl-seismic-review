@@ -39,7 +39,7 @@ jobs:
   publish:
     needs: readiness
     if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
-    uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy.yml@fc71ae973a0f31b8e9ee793fc8545a354448d451
+    uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy.yml@4738365705a6a478c0e4c2e94b784ebe5e5e25da
     with:
       hf-repo: SZLHOLDINGS/szl-seismic-review
       ref: ${{ github.sha }}
