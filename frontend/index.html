@@ -29,7 +29,7 @@
       </div>
     </aside>
 
-    <main class="content" id="overview">
+    <main class="content" id="overview" tabindex="-1">
       <header class="topbar">
         <div class="breadcrumb">SZL HOLDINGS <span>/</span> RESEARCH SYSTEMS <span>/</span> SEISMIC REVIEW</div>
         <span class="top-status" id="storage-state">Checking source</span>
@@ -66,7 +66,7 @@
         </form>
         <p class="filter-help" id="filter-help">Search uses visible record fields. A published-verdict filter excludes blind imports. JSON export spans pages, with up to 10,000 visible cards per download.</p>
         <p class="form-feedback" id="export-feedback" role="status" aria-live="polite"></p>
-        <div class="table-wrap" id="catalogue-results" aria-busy="true"><table class="table"><caption class="sr-only">Matching detection records</caption><thead><tr><th scope="col">RECORD</th><th scope="col">ORIGIN</th><th scope="col">REGION / CATALOGUE</th><th scope="col">PANEL VERDICT</th><th scope="col">MODEL READOUT</th><th scope="col">WAVEFORM</th><th scope="col"><span class="sr-only">Inspect record</span></th></tr></thead><tbody id="detection-rows"><tr><td colspan="7" class="empty">Loading records…</td></tr></tbody></table></div>
+        <div class="table-wrap" id="catalogue-results" role="region" aria-labelledby="catalogue-heading" tabindex="0" aria-busy="true"><table class="table"><caption class="sr-only">Matching detection records</caption><thead><tr><th scope="col">RECORD</th><th scope="col">ORIGIN</th><th scope="col">REGION / CATALOGUE</th><th scope="col">PANEL VERDICT</th><th scope="col">MODEL READOUT</th><th scope="col">WAVEFORM</th><th scope="col"><span class="sr-only">Inspect record</span></th></tr></thead><tbody id="detection-rows"><tr><td colspan="7" class="empty">Loading records…</td></tr></tbody></table></div>
         <div class="table-foot"><span id="page-status" role="status" aria-live="polite">Loading catalogue…</span><div><button id="prev-button" class="pager" type="button" disabled>Previous</button><button id="next-button" class="pager" type="button" disabled>Next →</button></div></div>
       </section>
 
