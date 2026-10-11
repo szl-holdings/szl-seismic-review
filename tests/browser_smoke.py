@@ -124,6 +124,35 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 await expect(page.locator("#detection-rows [data-record]")).to_have_count(20)
                 await expect(page.locator("#page-status")).to_contain_text(f"of {len(fixture)} matching records")
 
+            with check(report, "Skip link transfers keyboard focus to the main landmark"):
+                await page.keyboard.press("Tab")
+                await expect(page.locator(".skip-link")).to_be_focused()
+                await page.keyboard.press("Enter")
+                await expect(page.locator("#overview")).to_be_focused()
+
+            with check(report, "Canonical primary action remains readable at rest, hover and keyboard focus"):
+                action = page.locator(".hero-actions .btn-primary")
+                ratios = {}
+                for state in ("rest", "hover", "focus"):
+                    if state == "hover":
+                        await action.hover()
+                    elif state == "focus":
+                        await page.mouse.move(0, 0)
+                        await action.focus()
+                    ratios[state] = await action.evaluate("""element => {
+                        const context = document.createElement('canvas').getContext('2d');
+                        const luminance = color => {
+                            context.clearRect(0, 0, 1, 1); context.fillStyle = color; context.fillRect(0, 0, 1, 1);
+                            const data = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3).map(v => v / 255);
+                            const linear = data.map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);
+                            return .2126 * linear[0] + .7152 * linear[1] + .0722 * linear[2];
+                        };
+                        const style = getComputedStyle(element), a = luminance(style.color), b = luminance(style.backgroundColor);
+                        return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+                    }""")
+                    assert ratios[state] >= 4.5, (state, ratios)
+                report["primary_action_contrast"] = ratios
+
             with check(report, "Published verdict filters select the reported panel counts"):
                 for verdict in ("confirmed", "rejected", "unresolved"):
                     result = await wait_query(page, lambda verdict=verdict: page.locator("#verdict-filter").select_option(verdict), consensus=verdict)
@@ -243,7 +272,7 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 await page.keyboard.press("Tab")
                 await expect(page.locator("#close-drawer")).to_be_focused()
                 await expect(page.locator("#detail-content")).to_contain_text(fixture[0]["event_id"])
-                await page.screenshot(path=str(output / "desktop-detail.png"), full_page=True, animations="disabled")
+                await page.screenshot(path=str(output / "desktop-detail.png"), full_page=True, animations="disabled", timeout=60000)
                 await page.keyboard.press("Escape")
                 await expect(page.locator("#detail-drawer")).to_have_attribute("aria-hidden", "true")
                 await expect(opener).to_be_focused()
@@ -251,7 +280,7 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
 
             with check(report, "Desktop and mobile catalogue have no document overflow"):
                 await wait_query(page, lambda: page.locator("#clear-filters").click(), offset=0)
-                for name, width, height in (("desktop", 1440, 1000), ("mobile", 390, 844)):
+                for name, width, height in (("desktop", 1440, 1000), ("wide", 1920, 1080), ("tablet", 768, 1024), ("narrow", 320, 800), ("mobile", 390, 844)):
                     await page.set_viewport_size({"width": width, "height": height})
                     await page.locator("#catalogue-heading").scroll_into_view_if_needed()
                     dimensions = await page.evaluate("() => ({scroll: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth})")
@@ -264,10 +293,18 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                         }).filter(box => box.right > document.documentElement.clientWidth + 1).slice(0, 40)""")
                         print(json.dumps({"viewport": name, "overflow_elements": report["overflow_elements"]}), flush=True)
                     assert dimensions["scroll"] <= dimensions["viewport"] + 1, f"{name} document overflow: {dimensions}"
+                    presentation = await page.evaluate("""() => {
+                        const hero = getComputedStyle(document.querySelector('.hero'));
+                        return {image: hero.backgroundImage, fill: hero.backgroundColor,
+                            controls: [...document.querySelectorAll('.btn,.row-button,.pager,.brand')].filter(e => e.getClientRects().length).map(e => ({text: e.textContent.trim(), height: e.getBoundingClientRect().height}))};
+                    }""")
+                    assert "radial-gradient(" in presentation["image"] and presentation["fill"] != "rgba(0, 0, 0, 0)", presentation
+                    assert all(item["height"] >= 43.99 for item in presentation["controls"]), presentation
+                    report.setdefault("presentation", []).append({"viewport": name, **presentation})
                     await expect(page.locator("#search-query")).to_be_visible()
                     await expect(page.locator("#verdict-filter")).to_be_visible()
                     await expect(page.locator("#export-button")).to_be_visible()
-                    await page.screenshot(path=str(output / f"{name}.png"), full_page=True, animations="disabled")
+                    await page.screenshot(path=str(output / f"{name}.png"), full_page=True, animations="disabled", timeout=60000)
                 await page.locator("#detection-rows [data-record]").first.click()
                 await expect(page.get_by_role("dialog", name="Detection detail")).to_be_visible()
                 await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
@@ -275,13 +312,27 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 assert box and box["width"] <= 391
                 await page.locator("#close-drawer").click()
 
+            with check(report, "Evidence scroller is named, focusable and keyboard-scrollable on mobile"):
+                scroller = page.get_by_role("region", name="Detection catalogue")
+                await scroller.focus()
+                await expect(scroller).to_be_focused()
+                await page.keyboard.press("ArrowRight")
+                await page.wait_for_function("document.querySelector('#catalogue-results').scrollLeft > 0")
+
+            with check(report, "Forced colors provide a solid hero and reduced motion stops smooth scrolling"):
+                await page.emulate_media(forced_colors="active", reduced_motion="reduce")
+                paint = await page.locator(".hero").evaluate("element => ({image: getComputedStyle(element).backgroundImage, fill: getComputedStyle(element).backgroundColor})")
+                assert paint["image"] == "none" and paint["fill"] != "rgba(0, 0, 0, 0)", paint
+                assert await page.evaluate("getComputedStyle(document.documentElement).scrollBehavior") == "auto"
+                await page.emulate_media(forced_colors="none")
+
             with check(report, "Browser completed without page errors, HTTP errors or writes"):
                 assert not browser_errors, browser_errors
                 assert not http_errors, http_errors
                 assert not write_requests, write_requests
         except Exception:
             try:
-                await page.screenshot(path=str(output / "failure.png"), full_page=True, animations="disabled")
+                await page.screenshot(path=str(output / "failure.png"), full_page=True, animations="disabled", timeout=60000)
             except Exception as error:
                 report["failure_screenshot_error"] = str(error)
             raise
@@ -299,7 +350,8 @@ def main() -> int:
     report = {"schema": "szl.seismic.browser-smoke/v1", "evidence_class": "UNKNOWN",
               "started_at": datetime.now(timezone.utc).isoformat(), "checks": [], "passed": False,
               "scope": "Local read-only browser behavior against pinned fixtures; not deployment or scientific validation",
-              "source_revision_declared": os.environ.get("GITHUB_SHA"), "python": sys.version}
+              "source_revision_declared": os.environ.get("GITHUB_SHA"), "python": sys.version,
+              "frontend_sha256": {name: file_sha256(ROOT / name) for name in ("frontend/index.html", "frontend/app.css", "frontend/szl/SOURCE.json", "frontend/szl/szl-design-system.css", "frontend/szl/szl-console.css")}}
     process = None
     exit_code = 1
     with tempfile.TemporaryDirectory(prefix="szl-browser-") as directory, (output / "server.log").open("w", encoding="utf-8") as log:
