@@ -24,6 +24,8 @@ short_description: Evidence-bound earthquake catalogue review research pilot
 [Product](https://a-11-oy.com) · [Proof](https://a11oy.net) · [GitHub organization](https://github.com/szl-holdings)
 <!-- /szl:header -->
 
+<p><small>Orbit v2 artwork © SZL Holdings · <a href="https://github.com/szl-holdings/szl-brand/blob/4309f6fce89179331b0b3ed8c99494e76c5be256/kit/LICENSE">CC BY 4.0</a>. The SZL name and mark remain trademarks; source-code and scientific-data licenses remain as declared below.</small></p>
+
 An original SZL Holdings Python service and browser dashboard for studying **human confirmability of machine-catalogue earthquake detections**. The layout takes visual cues from the user-provided [BOb dashboard](https://bob.bzzzbx.com/dashboard.html); no BOb code or assets are included. The model and data path are based on a pinned, attributed [Meng et al. EarthArXiv preprint](https://eartharxiv.org/repository/view/14864/) and its [Zenodo dataset, version 1.1.0](https://doi.org/10.5281/zenodo.22059219).
 
 This is a **research pilot**. It does not determine whether an earthquake physically occurred, predict earthquakes, issue a hazard forecast, or validate a model for another region. The existing [a11oy seismic module](https://github.com/szl-holdings/a11oy/blob/main/a11oy_seismic.py) forecasts aftershock rates from USGS data; this repository handles a separate catalogue-quality question. `szl-lambda-gate` is not a scientific scoring dependency.
