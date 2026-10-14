@@ -156,6 +156,102 @@ def score_features(region: str, values: dict) -> dict:
 PLAIN_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 MAX_CONTRACT_DECIMAL_CHARS = 4096
 FIXTURE_BASIS = "holds in all 200 published fixture rows; not physical law"
+
+
+# Advisory joint-support proxy, reported only inside the opt-in contract block.
+# The per-feature training box is not joint support: a point can sit inside
+# every univariate range and still lie far from every training row. The proxy
+# is the Mahalanobis distance of the scorer's transformed feature vector from
+# the resolved training rows, under their own mean and covariance (divisor n,
+# the StandardScaler convention behind MODEL["scale"]). The threshold is the
+# largest distance among those same rows, so no training row is flagged; the
+# flag decision does not depend on the covariance divisor. Arithmetic is exact
+# on the binary64 transformed values and only reported distances are rounded.
+# It never changes score_status or confirmability_score.
+def transformed_vector(values: dict) -> list[float]:
+    """The scorer's feature transform for values already known to be in its domain."""
+    return [math.log1p(float(values[name])) if name in MODEL["transforms"] else float(values[name])
+            for name in FEATURES]
+
+
+def exact_inverse(matrix: list[list[Fraction]]) -> list[list[Fraction]]:
+    """Gauss-Jordan inverse in exact rationals."""
+    size = len(matrix)
+    work = [list(row) + [Fraction(int(i == j)) for j in range(size)] for i, row in enumerate(matrix)]
+    for column in range(size):
+        pivot = next((index for index in range(column, size) if work[index][column]), None)
+        if pivot is None:
+            raise RuntimeError("joint-support reference covariance is singular")
+        work[column], work[pivot] = work[pivot], work[column]
+        lead = work[column][column]
+        work[column] = [value / lead for value in work[column]]
+        for index in range(size):
+            factor = work[index][column]
+            if index != column and factor:
+                work[index] = [value - factor * base for value, base in zip(work[index], work[column])]
+    return [row[size:] for row in work]
+
+
+JOINT_REFERENCE = [[Fraction(value) for value in transformed_vector(row)] for row in PANEL
+                   if consensus([vote["verdict"] for vote in VOTES[row["panel_id"]]]) != "unresolved"]
+if len(JOINT_REFERENCE) != MODEL["n_train"]:
+    raise RuntimeError("joint-support reference rows do not match the training count")
+JOINT_MEAN = [sum(column) / len(JOINT_REFERENCE) for column in zip(*JOINT_REFERENCE)]
+joint_precision = exact_inverse([
+    [sum((row[i] - JOINT_MEAN[i]) * (row[j] - JOINT_MEAN[j]) for row in JOINT_REFERENCE) / len(JOINT_REFERENCE)
+     for j in range(len(FEATURES))]
+    for i in range(len(FEATURES))
+])
+# Integer numerators over one common denominator keep per-request work to
+# plain integer products while staying exact.
+JOINT_PRECISION_DENOMINATOR = math.lcm(*(value.denominator for row in joint_precision for value in row))
+JOINT_PRECISION_NUMERATORS = [[int(value * JOINT_PRECISION_DENOMINATOR) for value in row]
+                              for row in joint_precision]
+
+
+def squared_mahalanobis(vector: list) -> Fraction:
+    """Exact squared distance of a transformed vector from the reference rows."""
+    centred = [Fraction(value) - mean for value, mean in zip(vector, JOINT_MEAN)]
+    common = math.lcm(*(value.denominator for value in centred))
+    scaled = [value.numerator * (common // value.denominator) for value in centred]
+    total = sum(left * sum(weight * right for weight, right in zip(row, scaled))
+                for left, row in zip(scaled, JOINT_PRECISION_NUMERATORS))
+    return Fraction(total, JOINT_PRECISION_DENOMINATOR * common * common)
+
+
+def reported_distance(squared: Fraction) -> float | None:
+    try:
+        return round(math.sqrt(squared), 6)
+    except OverflowError:
+        pass  # The squared distance alone exceeds binary64; its root may not.
+    try:
+        return float(math.isqrt(squared.numerator // squared.denominator))
+    except OverflowError:
+        return None  # The distance itself exceeds binary64; the exact comparison is still made.
+
+
+JOINT_THRESHOLD_SQUARED = max(squared_mahalanobis(row) for row in JOINT_REFERENCE)
+JOINT_THRESHOLD = reported_distance(JOINT_THRESHOLD_SQUARED)
+JOINT_SUPPORT_PROXY = {
+    "code": "OUTSIDE_TRAINING_JOINT_SUPPORT_PROXY",
+    "effect": "ADVISORY",
+    "evidence_class": "DATA_OBSERVED",
+    "method": (f"Mahalanobis distance of the transformed feature vector (log1p counts) from the mean of the "
+               f"{len(JOINT_REFERENCE)} resolved training rows, using their covariance with divisor n"),
+    "reference_rows": len(JOINT_REFERENCE),
+    "threshold": JOINT_THRESHOLD,
+    "threshold_basis": (f"largest distance among the same {len(JOINT_REFERENCE)} resolved training rows "
+                        "(in-sample); flagged only when strictly greater, compared exactly before rounding"),
+    "claim": ("Advisory proxy only: not joint-support certification and not scientific qualification. "
+              "It never changes score_status or confirmability_score."),
+}
+JOINT_SUPPORT_ADVISORY = {
+    "code": JOINT_SUPPORT_PROXY["code"], "holds_when": "mahalanobis_distance <= threshold",
+    "effect": "ADVISORY", "evidence_class": "DATA_OBSERVED",
+    "basis": "largest Mahalanobis distance among the resolved training rows; a proxy, not joint-support certification",
+}
+
+
 INPUT_CONTRACT_V1 = {
     "version": "szl.seismic-input/v1",
     "model_id": MODEL["id"],
@@ -189,6 +285,7 @@ INPUT_CONTRACT_V1 = {
          "effect": "ADVISORY", "evidence_class": "DATA_OBSERVED", "basis": FIXTURE_BASIS,
          "definition_status": "UNVERIFIED"},
     ],
+    "joint_support_proxy": JOINT_SUPPORT_PROXY,
     "claim": ("Conformance checks declared units, value forms and domains only. It is not scientific "
               "qualification and does not mean an input lies inside the training support."),
 }
@@ -222,7 +319,8 @@ def check_input_contract(values: Any, declared_units: Any) -> dict:
     """Check feature values against INPUT_CONTRACT_V1. Pure and stdlib-only.
 
     A declared unit must equal the contract unit exactly; a mismatch is refused,
-    never converted. Advisory relations are DATA_OBSERVED and never change status.
+    never converted. Advisory relations and the joint-support proxy are
+    DATA_OBSERVED and never change status or score.
     """
     values = values if isinstance(values, dict) else {}
     units = declared_units if isinstance(declared_units, dict) else {}
@@ -266,11 +364,21 @@ def check_input_contract(values: Any, declared_units: Any) -> dict:
             flagged.add("SECONDARY_GAP_EXCEEDS_PRIMARY")
         if parsed["az_gap"] + parsed["sec_az_gap"] > 360:
             flagged.add("GAPS_SUM_EXCEEDS_360")
+    advisory = [dict(item) for item in INPUT_CONTRACT_V1["observed_invariants"] if item["code"] in flagged]
+    proxy = {"distance_status": "UNAVAILABLE", "mahalanobis_distance": None, "threshold": JOINT_THRESHOLD}
+    if parsed.keys() == set(FEATURES):
+        squared = squared_mahalanobis(transformed_vector(parsed))
+        outside = squared > JOINT_THRESHOLD_SQUARED
+        proxy.update(distance_status="ABOVE_TRAINING_MAXIMUM" if outside else "AT_OR_BELOW_TRAINING_MAXIMUM",
+                     mahalanobis_distance=reported_distance(squared))
+        if outside:
+            advisory.append(dict(JOINT_SUPPORT_ADVISORY))
     return {
         "version": INPUT_CONTRACT_V1["version"],
         "status": "VIOLATION" if violations else "CONFORMS",
         "violations": violations,
-        "advisory": [dict(item) for item in INPUT_CONTRACT_V1["observed_invariants"] if item["code"] in flagged],
+        "advisory": advisory,
+        "joint_support_proxy": proxy,
         "claim": INPUT_CONTRACT_V1["claim"],
     }
 

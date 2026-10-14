@@ -122,8 +122,14 @@ def test_all_fixture_rows_conform_and_score_unchanged(client):
     for row in panel_rows():
         for features in (features_of(row), features_of(row, as_numbers=True)):
             report = service.check_input_contract(features, CANONICAL_UNITS)
+            distance = report["joint_support_proxy"]["mahalanobis_distance"]
             assert report == {"version": CONTRACT["version"], "status": "CONFORMS", "violations": [],
-                              "advisory": [], "claim": CONTRACT["claim"]}, row["panel_id"]
+                              "advisory": [],
+                              "joint_support_proxy": {"distance_status": "AT_OR_BELOW_TRAINING_MAXIMUM",
+                                                      "mahalanobis_distance": distance,
+                                                      "threshold": CONTRACT["joint_support_proxy"]["threshold"]},
+                              "claim": CONTRACT["claim"]}, row["panel_id"]
+            assert 0 <= distance <= CONTRACT["joint_support_proxy"]["threshold"], row["panel_id"]
             payload = {"region": REGION, "features": features}
             response = client.post("/api/score", json={**payload, "input_contract": opt_in()})
             assert response.status_code == 200
@@ -283,8 +289,9 @@ def test_exact_advisories_do_not_round_or_depend_on_decimal_context():
     features = {**features_of(panel_rows()[0]), "n_pha_total": 2 ** 54 + 1,
                 "n_sta": 2 ** 53, "az_gap": "180.0000000000000000",
                 "sec_az_gap": "180.0000000000000001"}
+    # 2**54 phases from 2**53 stations also lies far outside the training rows' joint spread.
     expected = ["PHASES_EXCEED_TWO_PER_STATION", "SECONDARY_GAP_EXCEEDS_PRIMARY",
-                "GAPS_SUM_EXCEEDS_360"]
+                "GAPS_SUM_EXCEEDS_360", "OUTSIDE_TRAINING_JOINT_SUPPORT_PROXY"]
     for precision in (1, 2, 28, 100):
         with localcontext() as context:
             context.prec = precision
@@ -292,7 +299,8 @@ def test_exact_advisories_do_not_round_or_depend_on_decimal_context():
         assert report["status"] == "CONFORMS"
         assert advisory_codes(report) == expected
     boundary = {**features, "n_pha_total": 2 ** 54, "sec_az_gap": "180.0000000000000000"}
-    assert advisory_codes(service.check_input_contract(boundary, CANONICAL_UNITS)) == []
+    assert advisory_codes(service.check_input_contract(boundary, CANONICAL_UNITS)) == [
+        "OUTSIDE_TRAINING_JOINT_SUPPORT_PROXY"]
 
 
 def test_decoded_json_float_precision_is_not_recoverable(client):
@@ -308,19 +316,22 @@ def test_decoded_json_float_precision_is_not_recoverable(client):
 
 
 def test_advisory_relations_never_change_status(client):
-    """DATA_OBSERVED advisories only. Joint support stays an open owner decision."""
+    """DATA_OBSERVED advisories, including the joint-support proxy, never change status."""
     joint = {"n_pha_total": 213, "n_sta": 4, "moveout_rms": 0.083, "az_gap": 305.2,
              "sec_az_gap": 9.3, "dist_nearest_sta_km": 76.036, "mag": 5.26}
     flipped = {**features_of(panel_rows()[0]), "az_gap": "50.8", "sec_az_gap": "214.0"}
     wide = {**features_of(panel_rows()[0]), "az_gap": 300, "sec_az_gap": 70}
     every = {**joint, "n_pha_total": 30, "n_sta": 10, "az_gap": 200, "sec_az_gap": 210}
+    proxy = "OUTSIDE_TRAINING_JOINT_SUPPORT_PROXY"
     expectations = [
-        (joint, ["PHASES_EXCEED_TWO_PER_STATION"]),
-        (flipped, ["SECONDARY_GAP_EXCEEDS_PRIMARY"]),
+        (joint, ["PHASES_EXCEED_TWO_PER_STATION", proxy]),
+        (flipped, ["SECONDARY_GAP_EXCEEDS_PRIMARY", proxy]),
         (wide, ["GAPS_SUM_EXCEEDS_360"]),
-        (every, ["PHASES_EXCEED_TWO_PER_STATION", "SECONDARY_GAP_EXCEEDS_PRIMARY", "GAPS_SUM_EXCEEDS_360"]),
+        (every, ["PHASES_EXCEED_TWO_PER_STATION", "SECONDARY_GAP_EXCEEDS_PRIMARY", "GAPS_SUM_EXCEEDS_360",
+                 proxy]),
     ]
     invariants = {item["code"]: item for item in CONTRACT["observed_invariants"]}
+    invariants[proxy] = service.JOINT_SUPPORT_ADVISORY
     for features, codes in expectations:
         report = service.check_input_contract(features, CANONICAL_UNITS)
         assert report["status"] == "CONFORMS" and report["violations"] == []
@@ -331,7 +342,7 @@ def test_advisory_relations_never_change_status(client):
         assert body == {**json.loads(legacy_body(payload)), "input_contract": report}
     mislabelled = service.check_input_contract(joint, {**CANONICAL_UNITS, "mag": "Mw"})
     assert mislabelled["status"] == "VIOLATION"
-    assert advisory_codes(mislabelled) == ["PHASES_EXCEED_TWO_PER_STATION"]
+    assert advisory_codes(mislabelled) == ["PHASES_EXCEED_TWO_PER_STATION", proxy]
 
 
 def test_contract_key_requires_supported_version(client):
