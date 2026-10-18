@@ -42,11 +42,12 @@ def card(kind: str) -> dict:
 
 
 async def scenario(context, base_url: str, output: Path, report: dict, kind: str,
-                   *, failed_post: bool = False, failed_detail: bool = False) -> None:
+                   *, failed_post: bool = False, failed_detail: bool = False,
+                   stale_catalogue: bool = False) -> None:
     state = {"acknowledged": False, "post_count": 0, "post_rejected": failed_post,
-             "summary_failed": True, "detail_failed": failed_detail,
+             "summary_failed": not stale_catalogue, "detail_failed": failed_detail,
              "detail_reads_after_ack": 0, "get_count": 0}
-    name = f"{kind}-{'rejected-post-retry' if failed_post else 'acknowledged'}-{'detail-and-summary-failure' if failed_detail else 'summary-failure'}"
+    name = f"{kind}-{'rejected-post-retry' if failed_post else 'acknowledged'}-{'stale-catalogue' if stale_catalogue else 'detail-and-summary-failure' if failed_detail else 'summary-failure'}"
     page = await context.new_page()
     page_errors = []
     page.on("pageerror", lambda error: page_errors.append(str(error)))
@@ -62,7 +63,7 @@ async def scenario(context, base_url: str, output: Path, report: dict, kind: str
                 assert request.post_data_json["detection_id"] == CASE_ID
                 assert "reviewer_id" not in request.post_data_json
             if state["post_rejected"]:
-                await route.fulfill(status=503, json={"detail": "SIMULATED write rejected before commit"})
+                await route.fulfill(status=422, json={"detail": "SIMULATED write rejected before commit"})
                 return
             state["acknowledged"] = True
             response = {"review": {"saved": True, "detection_id": CASE_ID},
@@ -128,11 +129,19 @@ async def scenario(context, base_url: str, output: Path, report: dict, kind: str
                 assert await page.locator("#acknowledged-writes").count() == 0
                 state["post_rejected"] = False
 
+            if stale_catalogue:
+                await page.evaluate("""() => {
+                  const original = loadCatalogue;
+                  loadCatalogue = async () => { loadCatalogue = original; return undefined; };
+                }""")
+
             await action.click()
             acknowledged = page.locator("#import-feedback" if kind == "import" else "#acknowledged-writes")
             notice = {"review": "Verdict locked", "waveform": "Five traces attached and locked", "import": "Imported 1 records"}[kind]
             await expect(acknowledged).to_contain_text(notice)
-            await expect(acknowledged).to_contain_text("Summary counts could not be refreshed")
+            await expect(acknowledged).to_contain_text(
+                "Catalogue could not be refreshed" if stale_catalogue
+                else "Summary counts could not be refreshed")
             await expect(acknowledged).to_contain_text("Retry refresh only")
             expected_posts = 2 if failed_post else 1
             assert state["post_count"] == expected_posts
@@ -171,6 +180,321 @@ async def scenario(context, base_url: str, output: Path, report: dict, kind: str
         await page.close()
 
 
+async def ambiguous_post_scenario(context, base_url: str, output: Path,
+                                  report: dict, kind: str, *, committed: bool = False) -> None:
+    """A 503 is outcome-unknown; only an authoritative case read can unlock a retry."""
+    name = f"{kind}-ambiguous-post-{'committed' if committed else 'uncommitted'}"
+    state = {"post_count": 0, "detail_failed": True}
+    page = await context.new_page()
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+    async def intercept(route):
+        request = route.request
+        path = unquote(urlsplit(request.url).path)
+        if request.method == "POST":
+            state["post_count"] += 1
+            expected = {"review": "/api/reviews", "waveform": f"/api/detections/{CASE_ID}/waveform",
+                        "import": "/api/catalogues/import"}[kind]
+            assert path == expected, f"Unexpected simulated write: {path}"
+            await route.fulfill(status=503, json={"detail": "SIMULATED outcome UNKNOWN"})
+        elif path == "/api/meta":
+            response = await route.fetch()
+            meta = await response.json()
+            meta.update(import_enabled=True, review_write_enabled=True,
+                        storage_state="LOCAL_FILE_UNVERIFIED_DURABILITY")
+            await route.fulfill(response=response, json=meta)
+        elif path == "/api/detections":
+            await route.fulfill(json={"total": 1, "items": [card(kind)], "offset": 0, "limit": 20})
+        elif path == f"/api/detections/{CASE_ID}":
+            if state["post_count"] and state["detail_failed"]:
+                await route.fulfill(status=503, json={"detail": "SIMULATED detail unavailable"})
+                return
+            observed_commit = committed and state["post_count"] > 0
+            detail = {**card(kind), "blind": not (kind == "review" and observed_commit),
+                      "waveform_sha256": HASH if kind == "review" or observed_commit else None,
+                      "waveform": {key: value for key, value in WAVEFORM.items()
+                                   if key != "source_uri"} if kind == "review" or observed_commit else None,
+                      "reviews": [{"reviewer_id": "simulated", "verdict": "confirmed"}]
+                      if kind == "review" and observed_commit else [], "features": {}}
+            await route.fulfill(json=detail)
+        else:
+            await route.continue_()
+
+    await page.route(f"{base_url}/api/**", intercept)
+    try:
+        with check(report, name, fixture="SIMULATED_AMBIGUOUS_POST"):
+            await page.goto(base_url, wait_until="domcontentloaded")
+            await ready(page)
+            await page.locator("#operator-token").fill(DUMMY_CUSTODIAN)
+            if kind == "import":
+                await page.locator("#import-catalogue").fill("simulated-browser-catalogue")
+                await page.locator("#import-file").set_input_files({
+                    "name": "outcome-unknown.csv", "mimeType": "text/csv",
+                    "buffer": b"event_id,n_sta\nsimulated,5\n"})
+                action = page.locator("#import-button")
+            else:
+                await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                if kind == "review":
+                    await page.locator("#reviewer-token").fill(DUMMY_REVIEWER)
+                    await page.locator("#open-reviewer-case").click()
+                    await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                    await page.locator("#review-note").fill("SIMULATED uncertain write")
+                    action = page.locator('[data-verdict="confirmed"]')
+                else:
+                    await page.locator("#waveform-file").set_input_files({
+                        "name": "outcome-unknown.json", "mimeType": "application/json",
+                        "buffer": json.dumps(WAVEFORM).encode()})
+                    action = page.locator("#attach-waveform")
+            await action.click()
+            if kind == "import":
+                await expect(page.locator("#import-feedback")).to_contain_text("Import outcome UNKNOWN")
+                await expect(action).to_be_disabled()
+                await page.locator("#retry-import-refresh").click()
+                await expect(page.locator("#import-feedback")).to_contain_text("This session will not resubmit")
+                await page.locator("#operator-token").fill(DUMMY_CUSTODIAN + "-SECOND")
+                await expect(action).to_be_disabled()
+            else:
+                retry = page.locator(f"#retry-{kind}-credential-refresh")
+                await expect(retry).to_be_visible()
+                await expect(page.locator("#acknowledged-writes")).to_contain_text("POST outcome UNKNOWN")
+                state["detail_failed"] = False
+                await retry.click()
+                await expect(page.locator("#acknowledged-writes")).to_have_count(0)
+                if committed:
+                    await expect(action).to_have_count(0)
+                else:
+                    await expect(action).to_be_enabled()
+            assert state["post_count"] == 1, "GET-only reconciliation must not resubmit POST"
+            assert not page_errors, page_errors
+            report["scenarios"].append({"name": name, "post_count": 1,
+                                        "all_posts_intercepted": True})
+    except Exception:
+        await page.screenshot(path=str(output / f"{name}-failure.png"),
+                              full_page=True, animations="disabled")
+        raise
+    finally:
+        await page.close()
+
+
+async def credential_session_scenario(context, base_url: str, output: Path,
+                                      report: dict, kind: str, *, pending: bool,
+                                      refresh_failure: bool = False) -> None:
+    """Old credential acknowledgements must never appear in the next session."""
+    name = f"{kind}-credential-change-{'pending-post' if pending else 'after-ack'}"
+    if refresh_failure:
+        name += "-refresh-recovery"
+    started, release, reconciled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    state = {"post_count": 0, "committed": False,
+             "summary_failed": refresh_failure and kind == "import",
+             "detail_failed": refresh_failure and kind != "import"}
+    page = await context.new_page()
+    page_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+    async def intercept(route):
+        request = route.request
+        path = unquote(urlsplit(request.url).path)
+        if request.method == "POST":
+            state["post_count"] += 1
+            expected = {"review": "/api/reviews", "waveform": f"/api/detections/{CASE_ID}/waveform",
+                        "import": "/api/catalogues/import"}[kind]
+            assert path == expected, f"Unexpected simulated write: {path}"
+            token = DUMMY_REVIEWER if kind == "review" else DUMMY_CUSTODIAN
+            assert request.headers.get("authorization") == f"Bearer {token}"
+            if pending:
+                started.set()
+                await asyncio.wait_for(release.wait(), timeout=15)
+            response = {"review": {"saved": True, "detection_id": CASE_ID},
+                        "waveform": {"waveform_sha256": HASH},
+                        "import": {"imported": 1, "source_sha256": HASH}}[kind]
+            state["committed"] = True
+            await route.fulfill(status=200, json=response)
+        elif pending and release.is_set() and ((kind == "import" and path == "/api/summary") or
+                                                   (kind != "import" and path == f"/api/detections/{CASE_ID}")):
+            reconciled.set()
+            if kind == "import":
+                if state["summary_failed"]:
+                    await route.fulfill(status=503, json={"detail": "SIMULATED summary unavailable"})
+                else:
+                    await route.continue_()
+            else:
+                if state["detail_failed"]:
+                    await route.fulfill(status=503, json={"detail": "SIMULATED detail unavailable"})
+                else:
+                    detail = {**card(kind), "blind": True,
+                              "waveform_sha256": HASH,
+                              "waveform": {key: value for key, value in WAVEFORM.items()
+                                           if key != "source_uri"}}
+                    await route.fulfill(json=detail)
+        elif path == "/api/meta":
+            response = await route.fetch()
+            meta = await response.json()
+            meta.update(import_enabled=True, review_write_enabled=True,
+                        storage_state="LOCAL_FILE_UNVERIFIED_DURABILITY")
+            await route.fulfill(response=response, json=meta)
+        elif path == "/api/detections":
+            await route.fulfill(json={"total": 1, "items": [card(kind)], "offset": 0, "limit": 20})
+        elif path == f"/api/detections/{CASE_ID}":
+            detail = {**card(kind), "blind": True,
+                      "waveform_sha256": HASH if kind == "review" else None,
+                      "waveform": {key: value for key, value in WAVEFORM.items()
+                                   if key != "source_uri"} if kind == "review" else None}
+            await route.fulfill(json=detail)
+        else:
+            await route.continue_()
+
+    await page.route(f"{base_url}/api/**", intercept)
+    try:
+        with check(report, name, fixture="SIMULATED_CREDENTIAL_SESSION_WRITES"):
+            await page.goto(base_url, wait_until="domcontentloaded")
+            await ready(page)
+            await page.evaluate("""() => {
+              window.__settledPosts = 0;
+              const originalApi = api;
+              api = async (...args) => {
+                const isPost = args[1]?.method === "POST";
+                try { return await originalApi(...args); }
+                finally { if (isPost) setTimeout(() => {
+                  document.body.dataset.settledPosts = String(++window.__settledPosts);
+                }, 0); }
+              };
+            }""")
+            await page.locator("#operator-token").fill(DUMMY_CUSTODIAN)
+            if kind == "import":
+                await page.locator("#import-catalogue").fill("simulated-browser-catalogue")
+                await page.locator("#import-file").set_input_files({
+                    "name": "old-session.csv", "mimeType": "text/csv",
+                    "buffer": b"event_id,n_sta\nsimulated,5\n"})
+                action = page.locator("#import-button")
+                acknowledgement = page.locator("#import-feedback")
+            else:
+                await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                if kind == "review":
+                    await page.locator("#reviewer-token").fill(DUMMY_REVIEWER)
+                    await page.locator("#open-reviewer-case").click()
+                    await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                    await page.locator("#review-note").fill("SIMULATED credential session")
+                    action = page.locator('[data-verdict="confirmed"]')
+                else:
+                    await page.locator("#waveform-file").set_input_files({
+                        "name": "old-session.json", "mimeType": "application/json",
+                        "buffer": json.dumps(WAVEFORM).encode()})
+                    action = page.locator("#attach-waveform")
+                acknowledgement = page.locator("#acknowledged-writes")
+
+            await action.click()
+            if pending:
+                await asyncio.wait_for(started.wait(), timeout=5)
+            else:
+                notice = {"review": "Verdict locked", "waveform": "Five traces attached and locked",
+                          "import": "Imported 1 records"}[kind]
+                await expect(acknowledgement).to_contain_text(notice)
+                if kind != "review":
+                    await expect(acknowledgement).to_contain_text(HASH)
+
+            if kind == "review":
+                await page.locator("#reviewer-token").fill(DUMMY_REVIEWER + "-SECOND")
+                await page.locator("#open-reviewer-case").click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                if pending:
+                    await expect(page.locator('[data-verdict="confirmed"]')).to_be_disabled()
+                else:
+                    await expect(page.locator('[data-verdict="confirmed"]')).to_be_enabled()
+            elif kind == "waveform":
+                await page.locator("#close-drawer").click()
+                await page.locator("#operator-token").fill(DUMMY_CUSTODIAN + "-SECOND")
+                await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                await expect(page.locator("#attach-waveform")).to_be_disabled()
+            else:
+                await page.locator("#operator-token").fill(DUMMY_CUSTODIAN + "-SECOND")
+                await expect(page.locator("#import-feedback")).to_be_empty()
+                await page.locator("#import-file").set_input_files({
+                    "name": "new-session.csv", "mimeType": "text/csv",
+                    "buffer": b"event_id,n_sta\nnew-session,5\n"})
+                await page.locator("#search-query").fill("new-session-query")
+                if pending:
+                    await expect(page.locator("#import-button")).to_be_disabled()
+                else:
+                    await expect(page.locator("#import-button")).to_be_enabled()
+
+            if pending:
+                guarded = {"review": '[data-verdict="confirmed"]', "waveform": "#attach-waveform",
+                           "import": "#import-button"}[kind]
+                await page.locator(guarded).evaluate("element => element.click()")
+                assert state["post_count"] == 1, "A new credential must not issue a second pending POST"
+
+            if pending:
+                release.set()
+                # The test-only wrapper signals after the POST promise settles and
+                # the write handler has had its continuation microtask.
+                await expect(page.locator("body")).to_have_attribute("data-settled-posts", "1")
+                await asyncio.wait_for(reconciled.wait(), timeout=15)
+
+            if refresh_failure and kind == "import":
+                await expect(page.locator("#import-feedback")).to_contain_text("Catalogue refresh is required")
+                await page.locator("#operator-token").fill(DUMMY_CUSTODIAN + "-THIRD")
+                await expect(page.locator("#retry-import-refresh")).to_be_visible()
+                await page.locator("#import-file").set_input_files({
+                    "name": "third-session.csv", "mimeType": "text/csv",
+                    "buffer": b"event_id,n_sta\nthird-session,5\n"})
+                await expect(page.locator("#import-button")).to_be_disabled()
+                state["summary_failed"] = False
+                await page.locator("#retry-import-refresh").click()
+                await expect(page.locator("#import-feedback")).to_be_empty()
+            elif refresh_failure:
+                retry = page.locator(f"#retry-{kind}-credential-refresh")
+                await expect(retry).to_be_visible()
+                await expect(page.locator("#acknowledged-writes")).to_contain_text(
+                    "A previous write may have completed")
+                if kind == "review":
+                    await page.locator("#reviewer-token").fill(DUMMY_REVIEWER + "-THIRD")
+                    await page.locator("#open-reviewer-case").click()
+                else:
+                    await page.locator("#close-drawer").click()
+                    await page.locator("#operator-token").fill(DUMMY_CUSTODIAN + "-THIRD")
+                    await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(retry).to_be_visible()
+                state["detail_failed"] = False
+                await retry.click()
+                await expect(page.locator("#acknowledged-writes")).to_have_count(0)
+
+            if kind != "import":
+                await page.locator("#close-drawer").click()
+                await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                assert await page.locator("#acknowledged-writes").count() == 0
+                if kind == "review":
+                    await expect(page.locator('[data-verdict="confirmed"]')).to_be_enabled()
+                else:
+                    if pending:
+                        await expect(page.locator("#attach-waveform")).to_have_count(0)
+                        await expect(page.locator("#detail-content")).to_contain_text("Five-station waveform attached")
+                    else:
+                        await expect(page.locator("#attach-waveform")).to_be_disabled()
+                        await expect(page.locator("#detail-drawer")).not_to_contain_text(HASH)
+            else:
+                await expect(page.locator("#import-feedback")).to_be_empty()
+                expected_file = "third-session.csv" if refresh_failure else "new-session.csv"
+                assert await page.locator("#import-file").evaluate("element => element.files[0]?.name") == expected_file
+                await expect(page.locator("#import-button")).to_be_enabled()
+                await expect(page.locator("#search-query")).to_have_value("new-session-query")
+            assert state["post_count"] == 1, "Credential change must not resubmit a write"
+            assert not page_errors, page_errors
+            report["scenarios"].append({"name": name, "post_count": 1,
+                                        "all_posts_intercepted": True})
+    except Exception:
+        await page.screenshot(path=str(output / f"{name}-failure.png"),
+                              full_page=True, animations="disabled")
+        raise
+    finally:
+        release.set()
+        await page.close()
+
+
 async def run_browser(base_url: str, output: Path, report: dict, channel: str | None) -> None:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**({"channel": channel} if channel else {}))
@@ -183,6 +507,15 @@ async def run_browser(base_url: str, output: Path, report: dict, channel: str | 
                 await scenario(context, base_url, output, report, kind, failed_post=True)
                 if kind != "import":
                     await scenario(context, base_url, output, report, kind, failed_detail=True)
+                if kind == "import":
+                    await scenario(context, base_url, output, report, kind, stale_catalogue=True)
+                await ambiguous_post_scenario(context, base_url, output, report, kind)
+                if kind != "import":
+                    await ambiguous_post_scenario(context, base_url, output, report, kind, committed=True)
+                await credential_session_scenario(context, base_url, output, report, kind, pending=False)
+                await credential_session_scenario(context, base_url, output, report, kind, pending=True)
+                await credential_session_scenario(context, base_url, output, report, kind,
+                                                  pending=True, refresh_failure=True)
             await context.close()
         finally:
             await browser.close()

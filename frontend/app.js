@@ -1,5 +1,5 @@
 /* SZL Seismic Review UI. Credentials live only in this page's input elements. */
-const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", query:"", consensus:"", catalogueRequestSeq:0, catalogueLoaded:false, exportBusy:false, searchTimer:null, evidenceRequestSeq:0, selected:null, selectedOrigin:null, detailRequestSeq:0, returnFocus:null, records:new Map(), reviewerEpoch:0, writeOutcomes:new Map(), importBusy:false, importOutcome:null};
+const state = {meta:null, summary:null, offset:0, limit:20, catalogue:"", query:"", consensus:"", catalogueRequestSeq:0, catalogueLoaded:false, exportBusy:false, searchTimer:null, evidenceRequestSeq:0, selected:null, selectedOrigin:null, detailRequestSeq:0, returnFocus:null, records:new Map(), reviewerEpoch:0, operatorEpoch:0, writeOutcomes:new Map(), pendingWrites:new Set(), pendingWriteRefresh:new Map(), pendingWriteUncertain:new Map(), reconciliationInFlight:new Set(), waveformCommitted:new Set(), importBusy:false, importOutcome:null, importRefreshErrors:null, importOutcomeUnknown:false};
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const cleanNumber = (value, digits=2) => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
@@ -12,9 +12,10 @@ async function api(path, options={}) {
   const response = await fetch(path, {cache:"no-store", ...options});
   let payload;
   try {payload = await response.json();} catch {throw new Error(`Server returned HTTP ${response.status}`);}
-  if (!response.ok) throw new Error(typeof payload.detail === "string" ? payload.detail : `HTTP ${response.status}`);
+  if (!response.ok) {const error=new Error(typeof payload.detail === "string" ? payload.detail : `HTTP ${response.status}`);error.httpStatus=response.status;throw error;}
   return payload;
 }
+const precommitRejection = error => [400,401,403,404,413,422].includes(error.httpStatus);
 
 function label(value) {return ({confirmed:"Confirmed", rejected:"Rejected", unresolved:"Unresolved", real:"Confirmed", false:"Rejected", uncertain:"Uncertain"})[value] || value || "Awaiting review";}
 function badge(value) {return `<span class="badge ${["confirmed","rejected","unresolved"].includes(value) ? value : "neutral"}">${esc(label(value))}</span>`;}
@@ -235,7 +236,7 @@ async function openDetail(id,origin=state.selectedOrigin,notice=""){
     document.querySelectorAll("[data-verdict]").forEach(button=>button.addEventListener("click",()=>submitReview(button.dataset.verdict,id,reviewerCredential,requestSeq)));
     $("attach-waveform")?.addEventListener("click",()=>attachWaveform(id,requestSeq));
     showAcknowledgedWrites(id,requestSeq);
-    return true;
+    return data;
   }catch(error){if(activeDetail(id,requestSeq)){$("detail-content").innerHTML=`<p role="alert">Could not load record: ${esc(error.message)}</p>`;showAcknowledgedWrites(id,requestSeq,"Case detail could not be refreshed.");}return false;}
   finally{if(activeDetail(id,requestSeq))$("detail-content").setAttribute("aria-busy","false");}
 }
@@ -261,7 +262,21 @@ function drawerKeyboard(event){
 }
 
 function clearDetailOnCredentialChange(event){
-  if(event?.target.id==="reviewer-token")++state.reviewerEpoch;
+  if(event?.target.id==="reviewer-token"){
+    ++state.reviewerEpoch;
+    for(const key of state.writeOutcomes.keys())if(key.startsWith("review:"))state.writeOutcomes.delete(key);
+  }
+  if(event?.target.id==="operator-token"){
+    ++state.operatorEpoch;
+    for(const key of state.writeOutcomes.keys())if(key.startsWith("waveform:"))state.writeOutcomes.delete(key);
+    if(state.importOutcome?.refreshError)state.importRefreshErrors=[state.importOutcome.refreshError];
+    state.importOutcome=null;
+    $("import-feedback").textContent="";
+    $("import-feedback").classList.remove("error");
+    $("import-file").value="";
+    $("import-button").disabled=true;
+    if(state.importRefreshErrors)showImportRefreshRequired();
+  }
   if(state.selectedOrigin==="OPERATOR_IMPORT" && state.selected){
     ++state.detailRequestSeq;
     $("detail-content").setAttribute("aria-busy","false");
@@ -270,17 +285,27 @@ function clearDetailOnCredentialChange(event){
 }
 
 function reviewOutcomeKey(id,epoch=state.reviewerEpoch){return `review:${epoch}:${id}`;}
-function detailWriteOutcomes(id){return [state.writeOutcomes.get(reviewOutcomeKey(id)),state.writeOutcomes.get(`waveform:${id}`)].filter(Boolean);}
+function waveformOutcomeKey(id,epoch=state.operatorEpoch){return `waveform:${epoch}:${id}`;}
+function pendingWriteKey(kind,id){return `${kind}:${id}`;}
+function detailWriteOutcomes(id){return [state.writeOutcomes.get(reviewOutcomeKey(id)),state.writeOutcomes.get(waveformOutcomeKey(id))].filter(Boolean);}
 
 function showAcknowledgedWrites(id,requestSeq,detailError=""){
   if(!activeDetail(id,requestSeq))return;
   $("acknowledged-writes")?.remove();
+  document.querySelectorAll("[data-verdict]").forEach(button=>button.disabled=state.pendingWrites.has(pendingWriteKey("review",id)) || state.writeOutcomes.has(reviewOutcomeKey(id)));
+  if($("attach-waveform"))$("attach-waveform").disabled=state.pendingWrites.has(pendingWriteKey("waveform",id)) || state.waveformCommitted.has(id) || state.writeOutcomes.has(waveformOutcomeKey(id));
   const outcomes=detailWriteOutcomes(id);
-  if(!outcomes.length)return;
+  const pending=["review","waveform"].map(kind=>[kind,pendingWriteKey(kind,id)]).filter(([,key])=>state.pendingWriteRefresh.has(key));
+  if(!outcomes.length && !pending.length)return;
   const container=document.createElement("div");container.id="acknowledged-writes";container.setAttribute("role","status");
   outcomes.forEach(outcome=>{const message=document.createElement("p");message.className="success-note";message.textContent=outcome.notice;container.append(message);});
-  if(state.writeOutcomes.has(reviewOutcomeKey(id)))document.querySelectorAll("[data-verdict]").forEach(button=>button.disabled=true);
-  if(state.writeOutcomes.has(`waveform:${id}`) && $("attach-waveform"))$("attach-waveform").disabled=true;
+  pending.forEach(([kind,key])=>{
+    const warning=document.createElement("p");warning.className="warning";
+    warning.textContent=`A previous write may have completed. ${state.pendingWriteRefresh.get(key)} Refresh the case before submitting another write.`;
+    container.append(warning);
+    const retry=document.createElement("button");retry.id=`retry-${kind}-credential-refresh`;retry.type="button";retry.className="btn btn-secondary btn-sm";retry.textContent="Retry refresh";
+    retry.addEventListener("click",async()=>{retry.disabled=true;await reconcileChangedCredentialWrite(id,key);});container.append(retry);
+  });
   const errors=[...new Set([...outcomes.map(outcome=>outcome.refreshError).filter(Boolean),detailError].filter(Boolean))];
   if(errors.length){
     const warning=document.createElement("p");warning.className="warning";warning.textContent=`The write was acknowledged; ${errors.join(" ")} Retry refresh only; do not submit the write again.`;container.append(warning);
@@ -293,9 +318,41 @@ function showAcknowledgedWrites(id,requestSeq,detailError=""){
 async function refreshOverviewAfterWrite(){
   const results=await Promise.allSettled([loadCatalogue(),loadSummary()]);
   const errors=[];
-  if(results[0].status==="rejected" || results[0].value===false)errors.push("Catalogue could not be refreshed.");
+  if(results[0].status==="rejected" || results[0].value!==true)errors.push("Catalogue could not be refreshed.");
   if(results[1].status==="rejected")errors.push("Summary counts could not be refreshed.");
   return errors;
+}
+
+async function reconcileChangedCredentialWrite(id,pendingKey){
+  if(state.reconciliationInFlight.has(pendingKey))return;
+  // A changed credential must read the case after the POST settles. Failed or
+  // stale GETs leave the write locked; the retry invokes GETs only.
+  state.reconciliationInFlight.add(pendingKey);
+  const epoch=pendingKey.startsWith("review:") ? state.reviewerEpoch : state.operatorEpoch;
+  const currentEpoch=()=>pendingKey.startsWith("review:") ? state.reviewerEpoch : state.operatorEpoch;
+  const credential=reviewerToken() || operatorToken();
+  const overview=refreshOverviewAfterWrite();
+  const detail=state.selected===id && state.selectedOrigin==="OPERATOR_IMPORT"
+    ? openDetail(id,"OPERATOR_IMPORT")
+    : credential ? api(`/api/detections/${encodeURIComponent(id)}`,{headers:authHeaders(credential)}).catch(()=>false) : Promise.resolve(false);
+  try{
+    const [errors,detailResult]=await Promise.all([overview,detail]);
+    if(!detailResult || typeof detailResult!=="object")errors.push("Case detail could not be refreshed.");
+    if(currentEpoch()!==epoch)errors.push("Credentials changed during refresh.");
+    const uncertainEpoch=state.pendingWriteUncertain.get(pendingKey);
+    if(!errors.length && uncertainEpoch!==undefined){
+      if(pendingKey.startsWith("review:") && uncertainEpoch!==state.reviewerEpoch)errors.push("The original reviewer identity cannot be checked in this session.");
+      else if(pendingKey.startsWith("review:") && detailResult.blind!==true && detailResult.blind!==false)errors.push("Review state is inconclusive.");
+      else if(pendingKey.startsWith("review:") && detailResult.blind===true && !detailResult.waveform)errors.push("Review state is inconclusive.");
+      else if(pendingKey.startsWith("waveform:") && detailResult.waveform && detailResult.waveform_sha256)state.waveformCommitted.add(id);
+      else if(pendingKey.startsWith("waveform:") && (detailResult.origin!=="OPERATOR_IMPORT" || detailResult.waveform!==null))errors.push("Waveform state is inconclusive.");
+    }
+    if(errors.length)state.pendingWriteRefresh.set(pendingKey,`${uncertainEpoch!==undefined ? "POST outcome UNKNOWN. " : ""}${errors.join(" ")}`);
+    else{state.pendingWriteRefresh.delete(pendingKey);state.pendingWriteUncertain.delete(pendingKey);state.pendingWrites.delete(pendingKey);}
+  }finally{
+    state.reconciliationInFlight.delete(pendingKey);
+    if(state.selected===id)showAcknowledgedWrites(id,state.detailRequestSeq);
+  }
 }
 
 async function refreshAfterWrite(outcome,id,requestSeq){
@@ -305,6 +362,7 @@ async function refreshAfterWrite(outcome,id,requestSeq){
   const detail=activeDetail(id,requestSeq) ? openDetail(id,"OPERATOR_IMPORT") : Promise.resolve();
   const refreshSeq=state.detailRequestSeq;
   const [errors,detailResult]=await Promise.all([overview,detail]);
+  if(!detailWriteOutcomes(id).includes(outcome))return;
   if(detailResult===false)errors.push("Case detail could not be refreshed.");
   outcome.refreshError=errors.join(" ");
   // Clear stale refresh warnings for the same case after a successful retry.
@@ -313,15 +371,28 @@ async function refreshAfterWrite(outcome,id,requestSeq){
 }
 
 async function submitReview(verdict,caseId,credential,requestSeq){
-  const outcomeKey=reviewOutcomeKey(caseId);
-  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(outcomeKey))return;
+  const epoch=state.reviewerEpoch,outcomeKey=reviewOutcomeKey(caseId,epoch),pendingKey=pendingWriteKey("review",caseId);
+  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(outcomeKey) || state.pendingWrites.has(pendingKey))return;
   const note=$("review-note").value.trim(),feedback=$("review-feedback");
   if(!credential || reviewerToken()!==credential){feedback.textContent="Reopen this case with the reviewer token shown above.";feedback.classList.add("error");return;}
   const buttons=[...document.querySelectorAll("[data-verdict]")];buttons.forEach(button=>button.disabled=true);
+  state.pendingWrites.add(pendingKey);
   feedback.textContent="Locking verdict…";feedback.classList.remove("error");
   try{
     await api("/api/reviews",{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body:JSON.stringify({detection_id:caseId,verdict,note})});
-  }catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");buttons.forEach(button=>button.disabled=false);}return;}
+  }catch(error){
+    if(precommitRejection(error)){
+      state.pendingWrites.delete(pendingKey);
+      if(activeDetail(caseId,requestSeq) && state.reviewerEpoch===epoch){feedback.textContent=error.message;feedback.classList.add("error");}
+      if(state.selected===caseId)showAcknowledgedWrites(caseId,state.detailRequestSeq);
+      return;
+    }
+    state.pendingWriteUncertain.set(pendingKey,epoch);
+    await reconcileChangedCredentialWrite(caseId,pendingKey);
+    return;
+  }
+  if(state.reviewerEpoch!==epoch){await reconcileChangedCredentialWrite(caseId,pendingKey);return;}
+  state.pendingWrites.delete(pendingKey);
   const outcome={notice:"Verdict locked for the reviewer identity bound to this token.",refreshError:""};
   state.writeOutcomes.set(outcomeKey,outcome);
   showAcknowledgedWrites(caseId,requestSeq);
@@ -329,27 +400,42 @@ async function submitReview(verdict,caseId,credential,requestSeq){
 }
 
 async function attachWaveform(caseId,requestSeq){
-  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(`waveform:${caseId}`))return;
+  const epoch=state.operatorEpoch,outcomeKey=waveformOutcomeKey(caseId,epoch),pendingKey=pendingWriteKey("waveform",caseId);
+  if(!activeDetail(caseId,requestSeq) || state.writeOutcomes.has(outcomeKey) || state.waveformCommitted.has(caseId) || state.pendingWrites.has(pendingKey))return;
   const credential=operatorToken();
   const feedback=$("waveform-feedback"),file=$("waveform-file").files[0];
   feedback.classList.remove("error");
   if(!credential){feedback.textContent="Enter the source custodian token in Operator tools, then reopen this record.";feedback.classList.add("error");return;}
   if(!file){feedback.textContent="Choose a waveform JSON file.";feedback.classList.add("error");return;}
   if(file.size>1_000_000){feedback.textContent="Waveform JSON exceeds the 1 MB request limit.";feedback.classList.add("error");return;}
+  const button=$("attach-waveform");button.disabled=true;
   let body;
   try{
     const parsed=JSON.parse(await file.text());
     if(!parsed || typeof parsed!=="object" || Array.isArray(parsed) || typeof parsed.source_uri!=="string" || !parsed.source_uri.trim() || !Number.isFinite(Number(parsed.sample_rate_hz)) || Number(parsed.sample_rate_hz)<=0 || !Array.isArray(parsed.stations) || parsed.stations.length!==5 || parsed.stations.some(station=>!station || !Array.isArray(station.samples) || station.samples.length<2 || station.samples.length>10000 || station.samples.some(value=>!Number.isFinite(Number(value)))))throw new Error("JSON must include a source URI, a positive sample rate, and exactly five numeric station traces.");
     body=JSON.stringify(parsed);
-  }catch(error){feedback.textContent=error instanceof SyntaxError ? "The selected file is not valid JSON." : error.message;feedback.classList.add("error");return;}
-  if(!activeDetail(caseId,requestSeq))return;
-  const button=$("attach-waveform");button.disabled=true;
+  }catch(error){if(state.operatorEpoch===epoch && activeDetail(caseId,requestSeq)){feedback.textContent=error instanceof SyntaxError ? "The selected file is not valid JSON." : error.message;feedback.classList.add("error");button.disabled=false;}return;}
+  if(state.operatorEpoch!==epoch || !activeDetail(caseId,requestSeq))return;
+  state.pendingWrites.add(pendingKey);
   feedback.textContent="Attaching and locking waveform evidence…";
   let result;
   try{result=await api(`/api/detections/${encodeURIComponent(caseId)}/waveform`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"application/json"},body});}
-  catch(error){if(activeDetail(caseId,requestSeq)){feedback.textContent=error.message;feedback.classList.add("error");button.disabled=false;}return;}
+  catch(error){
+    if(precommitRejection(error)){
+      state.pendingWrites.delete(pendingKey);
+      if(activeDetail(caseId,requestSeq) && state.operatorEpoch===epoch){feedback.textContent=error.message;feedback.classList.add("error");}
+      if(state.selected===caseId)showAcknowledgedWrites(caseId,state.detailRequestSeq);
+      return;
+    }
+    state.pendingWriteUncertain.set(pendingKey,epoch);
+    await reconcileChangedCredentialWrite(caseId,pendingKey);
+    return;
+  }
+  state.waveformCommitted.add(caseId);
+  if(state.operatorEpoch!==epoch){await reconcileChangedCredentialWrite(caseId,pendingKey);return;}
+  state.pendingWrites.delete(pendingKey);
   const outcome={notice:`Five traces attached and locked. SHA-256: ${result.waveform_sha256}. Source authenticity is unverified.`,refreshError:""};
-  state.writeOutcomes.set(`waveform:${caseId}`,outcome);
+  state.writeOutcomes.set(outcomeKey,outcome);
   showAcknowledgedWrites(caseId,requestSeq);
   await refreshAfterWrite(outcome,caseId,requestSeq);
 }
@@ -360,8 +446,42 @@ function showImportOutcome(outcome){
   if(outcome.refreshError){
     feedback.append(document.createTextNode(` The import was acknowledged; ${outcome.refreshError} Retry refresh only.`));
     const retry=document.createElement("button");retry.id="retry-import-refresh";retry.type="button";retry.className="btn btn-secondary btn-sm";retry.textContent="Retry refresh";
-    retry.addEventListener("click",async()=>{retry.disabled=true;outcome.refreshError=(await refreshOverviewAfterWrite()).join(" ");showImportOutcome(outcome);});feedback.append(retry);
+    retry.addEventListener("click",async()=>{
+      retry.disabled=true;
+      const errors=await refreshOverviewAfterWrite();
+      if(state.importOutcome!==outcome)return;
+      outcome.refreshError=errors.join(" ");state.importBusy=Boolean(outcome.refreshError);
+      showImportOutcome(outcome);
+      $("import-button").disabled=state.importBusy || !state.meta?.import_enabled || !$("import-file").files.length;
+    });feedback.append(retry);
   }
+}
+
+function showImportRefreshRequired(){
+  const feedback=$("import-feedback"),button=$("import-button");
+  button.disabled=true;
+  feedback.textContent=state.importOutcomeUnknown
+    ? `Import outcome UNKNOWN. The POST may have committed. ${state.importRefreshErrors.join(" ")} Retry refresh only; inspect catalogue and receipts before manual reconciliation. This session will not resubmit.`
+    : `Catalogue refresh is required before another import. ${state.importRefreshErrors.join(" ")}`;
+  const retry=document.createElement("button");retry.id="retry-import-refresh";retry.type="button";retry.className="btn btn-secondary btn-sm";retry.textContent="Retry refresh";
+  retry.addEventListener("click",async()=>{retry.disabled=true;await reconcileChangedCredentialImport();});
+  feedback.append(retry);
+}
+
+async function reconcileChangedCredentialImport(errors=null){
+  // The former credential's result stays private. A new import waits for a
+  // fresh catalogue/summary read before its file can be submitted.
+  const failures=errors===null ? await refreshOverviewAfterWrite() : errors;
+  if(failures.length || state.importOutcomeUnknown){
+    state.importBusy=true;
+    state.importRefreshErrors=failures;
+    showImportRefreshRequired();
+    return;
+  }
+  state.importRefreshErrors=null;
+  state.importBusy=false;
+  $("import-feedback").textContent="";
+  $("import-button").disabled=!state.meta?.import_enabled || !$("import-file").files.length;
 }
 
 async function importCatalogue(){
@@ -369,20 +489,34 @@ async function importCatalogue(){
   const file=$("import-file").files[0],catalogue=$("import-catalogue").value.trim(),region=$("import-region").value.trim(),feedback=$("import-feedback");
   if(!operatorToken()){feedback.textContent="Enter a source custodian token.";feedback.classList.add("error");return;}
   if(!file||!catalogue||!region){feedback.textContent="Choose a CSV and enter catalogue and region.";feedback.classList.add("error");return;}
-  const credential=operatorToken(),button=$("import-button");state.importBusy=true;button.disabled=true;feedback.textContent="Importing catalogue…";feedback.classList.remove("error");
-  let result;
+  const credential=operatorToken(),epoch=state.operatorEpoch,button=$("import-button");state.importBusy=true;button.disabled=true;feedback.textContent="Importing catalogue…";feedback.classList.remove("error");
+  let result,postStarted=false;
   try{
     const query=new URLSearchParams({catalogue,region});
-    result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"text/csv; charset=utf-8"},body:await file.text()});
-  }catch(error){feedback.textContent=error.message;feedback.classList.add("error");state.importBusy=false;button.disabled=false;return;}
+    const body=await file.text();
+    if(state.operatorEpoch!==epoch){await reconcileChangedCredentialImport([]);return;}
+    postStarted=true;
+    result=await api(`/api/catalogues/import?${query}`,{method:"POST",headers:{...authHeaders(credential),"Content-Type":"text/csv; charset=utf-8"},body});
+  }catch(error){
+    if(!postStarted || precommitRejection(error)){
+      if(state.operatorEpoch!==epoch){await reconcileChangedCredentialImport([]);return;}
+      feedback.textContent=error.message;feedback.classList.add("error");state.importBusy=false;button.disabled=false;return;
+    }
+    state.importOutcomeUnknown=true;
+    await reconcileChangedCredentialImport();
+    return;
+  }
+  if(state.operatorEpoch!==epoch){await reconcileChangedCredentialImport();return;}
   const outcome={notice:`Imported ${result.imported} records. Source SHA-256: ${result.source_sha256}. Waveform attachment remains required. Select a new file for another import.`,refreshError:""};
   state.importOutcome=outcome;
   if($("import-file").files[0]===file)$("import-file").value="";
   showImportOutcome(outcome);
   state.offset=0;state.catalogue="__imports__";state.query="";state.consensus="";$("catalogue-filter").value="__imports__";$("search-query").value="";$("verdict-filter").value="";
-  outcome.refreshError=(await refreshOverviewAfterWrite()).join(" ");
-  showImportOutcome(outcome);state.importBusy=false;
-  button.disabled=!state.meta.import_enabled || !$("import-file").files.length;
+  const errors=await refreshOverviewAfterWrite();
+  if(state.operatorEpoch!==epoch){await reconcileChangedCredentialImport(errors);return;}
+  outcome.refreshError=errors.join(" ");
+  state.importBusy=Boolean(outcome.refreshError);showImportOutcome(outcome);
+  button.disabled=state.importBusy || !state.meta.import_enabled || !$("import-file").files.length;
 }
 
 async function start(){
