@@ -15,7 +15,7 @@ concurrency:
 jobs:
   readiness:
     if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: read
@@ -39,7 +39,7 @@ jobs:
   publish:
     needs: readiness
     if: github.repository == 'szl-holdings/szl-seismic-review' && github.ref == 'refs/heads/main'
-    uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy.yml@fc71ae973a0f31b8e9ee793fc8545a354448d451
+    uses: szl-holdings/.github/.github/workflows/reusable-hf-deploy-seismic.yml@70b385e4e3e4ddb65085c1dff350bd4e283b6f17
     with:
       hf-repo: SZLHOLDINGS/szl-seismic-review
       ref: ${{ github.sha }}
@@ -53,11 +53,12 @@ jobs:
       prune: false
       wait-running: 600
       restart-space: false
-    secrets: inherit
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   verify-runtime:
     needs: publish
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
