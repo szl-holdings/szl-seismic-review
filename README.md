@@ -128,6 +128,8 @@ python tests/browser_smoke.py
 python tests/browser_write_outcomes.py
 ```
 
+The catalogue browser checks cover pagination boundaries, combined search and filters, filtered and empty JSON downloads, evidence views, and keyboard/mobile behavior. Local export and evidence failure/retry cases are explicitly **SIMULATED**. Reports include the application JavaScript hash. Use `--browser-channel msedge` to exercise an installed Edge browser when bundled Chromium is unavailable.
+
 The write-outcome browser regressions use **SIMULATED** intercepted write responses and read failures against an isolated read-only service. They verify UI recovery and duplicate-submission prevention, not a real operator transaction or scientific result.
 
 `Dockerfile` serves port 7860 for Hugging Face Spaces. No application credential is required to use the public read-only viewer. The local operator database is excluded from Git and the Docker build. Publication requires a separate Hugging Face publisher credential.
@@ -148,7 +150,10 @@ Run the same check from the exact published checkout:
 
 ```bash
 python scripts/verify_deployment.py --sha <full-published-GitHub-SHA> --output artifacts/runtime-verification.json
+python tests/browser_smoke.py --live --sha <full-published-GitHub-SHA> --output-dir artifacts/live-browser
 ```
+
+The publication job also runs the live browser command and retains its screenshots, downloaded JSON exports and result report. Live mode targets only the canonical Space, blocks browser write requests, uses no response mocks, and verifies source/Hub identity before and after the UI checks. It requires the exact published checkout with clean application source files. A failed live browser check fails the publication workflow even when uploading has succeeded.
 
 For a local Docker build from a clean checkout, create the same untracked ASCII source file explicitly before building:
 
