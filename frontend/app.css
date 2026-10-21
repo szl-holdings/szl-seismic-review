@@ -160,6 +160,13 @@ td .sub{display:block;font-family:var(--font-mono);font-size:var(--text-xs);colo
 .form-feedback{font-size:var(--text-sm);min-height:18px;margin:0;color:var(--text-sub)}
 .form-feedback.error{color:var(--ink-bad)}
 .form-feedback code{overflow-wrap:anywhere;font-variant-numeric:tabular-nums lining-nums}
+.custody-toolbar{display:flex;align-items:end;flex-wrap:wrap;gap:12px;margin-bottom:12px}
+.custody-toolbar .filter-field{flex:1;min-width:min(240px,100%)}
+.custody-toolbar .input{width:100%;min-width:0}
+.custody-workspace .table td{max-width:340px;overflow-wrap:anywhere}
+.custody-workspace .table details{font-size:var(--text-xs);margin-top:7px}
+.custody-workspace .table summary{cursor:pointer;min-height:var(--target-size-coarse);padding-block:12px}
+.custody-workspace .table code{display:block;max-width:280px;overflow-wrap:anywhere}
 footer{color:var(--text-ghost);font-size:var(--text-xs);padding:10px 0}
 
 /* ---------- Detail drawer (console .drawer / .scrim / .close-btn) ---------- */
@@ -183,6 +190,9 @@ footer{color:var(--text-ghost);font-size:var(--text-xs);padding:10px 0}
 .review-list{list-style:none;padding:0;margin:0}
 .review-list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:var(--border-hairline) solid var(--border-subtle)}
 .review-list li strong{font-family:var(--font-mono);font-variant-numeric:tabular-nums lining-nums;overflow-wrap:anywhere}
+.review-evidence li{display:block}
+.review-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.review-evidence .review-note{white-space:pre-wrap;overflow-wrap:anywhere}
 .trace{display:block;width:100%;height:85px;background:var(--code-bg);border:var(--border-hairline) solid var(--code-border);border-radius:var(--radius-md);margin:7px 0;color:var(--color-silver-300);color-scheme:dark}
 .review-actions{display:flex;flex-wrap:wrap;gap:8px}
 .review-actions button{min-height:2.25rem;padding:7px 14px;border:var(--border-hairline) solid var(--border);border-radius:var(--radius-md);background:transparent;color:var(--text);font-size:var(--text-sm);font-weight:var(--weight-semibold)}
