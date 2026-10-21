@@ -57,6 +57,17 @@ Open `http://127.0.0.1:7860`. The service is read-only unless credentials are co
 
 An acknowledged import, waveform attachment or verdict stays recorded as successful in the UI if a later read refresh fails. Refresh controls retry only reads; they do not resubmit the write. A successful import clears the selected file before another import can be submitted.
 
+Generate each bearer credential with a cryptographic secret manager (for example, Python `secrets.token_urlsafe(32)`). Configured tokens must be distinct, 32–512 ASCII bearer characters; the format check does not measure entropy. Reviewer identifiers must start with an ASCII letter or digit and contain only letters, digits, `.`, `_` and `-` (100 characters maximum). Duplicate JSON identities, shared tokens, and malformed credentials fail closed at startup. Malformed request credentials are rejected without an application error.
+
+### Custody and blind review
+
+1. The custodian imports a CSV, then explicitly loads **Private source custody** using the custodian credential. This private list maps each source event to its opaque case ID, so multi-event imports can receive the correct traces. Source checksums, attachment checksums, search, and pagination remain available after reopening the service with the same database.
+2. The custodian selects the intended source event and attaches its five blinded station traces. An attachment is immutable. This view cannot submit reviewer verdicts, even if another reviewer token remains in the page.
+3. A reviewer uses the public blind case ID with their own credential, examines the traces, and locks a verdict. Only that reviewer's locked case reveals event metadata, source reference, retained notes, timestamps and waveform hashes. Another reviewer stays blind until locking their own verdict. Use separate people and browser profiles for an actual blind study.
+4. Clearing/changing the custodian credential immediately clears private custody rows and invalidates pending reads. Public discovery and export never include this mapping. The custodian can read `/api/receipts` to check the local unsigned chain; reads do not add receipts.
+
+The current standalone service has **no qualified durable Hugging Face review store**. When the provider's `SPACE_ID` environment variable is present, custody access and all operator/reviewer writes return HTTP 503, even if tokens or another SQLite path are configured. `/api/meta` reports `write_activation.evidence_class: BLOCKED`. A path or credential alone cannot establish restart persistence. Enabling retained live reviews requires a separately qualified SQLite-safe store/recovery design and named custodian/reviewer provisioning; mounting SQLite on an object-storage bucket is not a substitute. Local research mode still labels storage durability unverified.
+
 The import CSV header is:
 
 ```text
@@ -113,6 +124,8 @@ The extraction script checks each archive's MD5 against the pinned Zenodo record
 
 `/healthz`, `/api/meta`, `/api/summary`, `/api/detections`, `/api/detections/{id}`, `/api/export`, `/api/evidence` and `/api/score` provide read access. Imported case detail requires either the source-custodian token or that reviewer's token. `/api/catalogues/import` and `/api/detections/{id}/waveform` require the custodian token; `/api/reviews` requires a reviewer token and derives the reviewer ID from it. `/api/receipts` lets the custodian check local receipt-chain self-consistency without writing on GET. `/api/docs` is the interactive API reference. The public Space is deliberately read-only.
 
+`GET /api/custody/detections` requires the custodian token and supports bounded `q`, `limit` (1–200), and `offset`. It returns only the custodian's source-event mapping and attachment readiness; reviewers cannot use it. It uses `Cache-Control: no-store` and never mints a receipt.
+
 ### Discovery, export and evidence
 
 - `/api/detections` and `/api/export` accept `q` (up to 100 characters), `catalogue`, `origin` (`published` or `imported`), and `consensus` (`confirmed`, `rejected` or `unresolved`). Search covers public case identifiers and published catalogue names. Imported events are searchable only by their opaque public ID; private event names, metadata, scores, source catalogue and waveform provenance are excluded. The published-consensus filter excludes imports.
@@ -126,11 +139,14 @@ python -m pip install -r requirements-browser.txt
 python -m playwright install chromium
 python tests/browser_smoke.py
 python tests/browser_write_outcomes.py
+python tests/browser_operator_workflows.py
 ```
 
 The catalogue browser checks cover pagination boundaries, combined search and filters, filtered and empty JSON downloads, evidence views, and keyboard/mobile behavior. Local export and evidence failure/retry cases are explicitly **SIMULATED**. Reports include the application JavaScript hash. Use `--browser-channel msedge` to exercise an installed Edge browser when bundled Chromium is unavailable.
 
 The write-outcome browser regressions use **SIMULATED** intercepted write responses and read failures against an isolated read-only service. They verify UI recovery and duplicate-submission prevention, not a real operator transaction or scientific result.
+
+The operator browser harness performs actual loopback HTTP transactions and SQLite writes using two **SAMPLE** events/traces and independently generated custodian/reviewer credentials. It accepts no remote target, uses no mocked responses, checks role denials and per-reviewer blindness, and restarts the process against the same isolated database. Its measured result establishes local workflow behavior and process-restart persistence only; it does not establish provider-volume durability, human independence, or scientific validation. Credentials are excluded from retained artifacts.
 
 `Dockerfile` serves port 7860 for Hugging Face Spaces. No application credential is required to use the public read-only viewer. The local operator database is excluded from Git and the Docker build. Publication requires a separate Hugging Face publisher credential.
 
@@ -151,9 +167,12 @@ Run the same check from the exact published checkout:
 ```bash
 python scripts/verify_deployment.py --sha <full-published-GitHub-SHA> --output artifacts/runtime-verification.json
 python tests/browser_smoke.py --live --sha <full-published-GitHub-SHA> --output-dir artifacts/live-browser
+python scripts/verify_write_guards.py --sha <full-published-GitHub-SHA> --output artifacts/write-guards.json
 ```
 
 The publication job also runs the live browser command and retains its screenshots, downloaded JSON exports and result report. Live mode targets only the canonical Space, blocks browser write requests, uses no response mocks, and verifies source/Hub identity before and after the UI checks. It requires the exact published checkout with clean application source files. A failed live browser check fails the publication workflow even when uploading has succeeded.
+
+The separate access verifier checks source identity before and after five credential-free denial probes: custody/receipt reads and empty invalid requests to the three write routes. It requires the explicit hosted storage denial and retains `write-guards.json`. These probes establish refusal on the current read-only deployment; successful live imports, attachments, and verdicts remain **BLOCKED** until the durable-store and identity requirements are satisfied.
 
 For a local Docker build from a clean checkout, create the same untracked ASCII source file explicitly before building:
 
