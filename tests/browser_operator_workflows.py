@@ -130,9 +130,13 @@ async def open_reviewer(page, identifier, token):
     await page.locator(f'[data-record="{identifier}"]').click()
     await expect(page.locator("#reviewer-access")).to_be_visible()
     await page.locator("#reviewer-token").fill(token)
-    async with page.expect_response(lambda r: unquote(urlsplit(r.url).path) == f"/api/detections/{identifier}"
-                                    and r.request.method == "GET"
-                                    and r.request.headers.get("authorization") == f"Bearer {token}") as pending:
+
+    async def matches_credential(response):
+        return (unquote(urlsplit(response.url).path) == f"/api/detections/{identifier}"
+                and response.request.method == "GET"
+                and await response.request.header_value("authorization") == f"Bearer {token}")
+
+    async with page.expect_response(matches_credential) as pending:
         await page.locator("#open-reviewer-case").click()
     response = await pending.value
     assert response.ok
