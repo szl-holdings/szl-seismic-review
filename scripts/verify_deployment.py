@@ -41,7 +41,7 @@ def digest(data):
 
 def canonical_text_bytes(data):
     """Return text bytes in the LF form used by the Linux publisher."""
-    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return data.replace(b"\r\n", b"\n")
 
 
 def source_static_bytes(root, path):

@@ -70,6 +70,12 @@ def test_complete_observations_require_stable_source_and_payload():
     assert report["hub_revision"] == "b" * 40
 
 
+def test_static_source_normalization_preserves_lone_carriage_returns(tmp_path):
+    asset = tmp_path / "app.js"
+    asset.write_bytes(b"first\r\nsecond\rliteral\n")
+    assert probe.source_static_bytes(tmp_path, "app.js") == b"first\nsecond\rliteral\n"
+
+
 def test_crlf_checkout_static_sources_match_deployed_lf_bytes(tmp_path):
     root = tmp_path / "crlf-checkout"
     needed = [
