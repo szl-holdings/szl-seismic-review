@@ -1,8 +1,9 @@
-"""Read-only Chromium checks against a temporary, local Seismic Review service.
+"""Read-only browser checks against local or exact-source live Seismic Review.
 
 Run explicitly with ``python tests/browser_smoke.py``. This is not a pytest unit
 test. Screenshots, the downloaded public export, JSON results and server logs are
 retained even on failure. No custodian/reviewer credentials or POSTs are used.
+Use --live --sha <merge-sha> for the canonical public Space without response mocks.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from contextlib import contextmanager
 import csv
 from datetime import datetime, timezone
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -27,6 +29,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import urlopen
 
 from playwright.async_api import async_playwright, expect
+from browser_catalogue_flows import catalogue_flows
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +94,8 @@ async def wait_query(page, action, **query) -> dict:
     return payload
 
 
-async def smoke(base_url: str, output: Path, report: dict) -> None:
+async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False,
+                browser_channel: str | None = None) -> None:
     with (ROOT / "data/japan_panel.csv").open(encoding="utf-8", newline="") as handle:
         fixture = list(csv.DictReader(handle))
     model = json.loads((ROOT / "models/japan_assoc_logistic_v1.json").read_text(encoding="utf-8"))
@@ -105,13 +109,31 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
     report["write_requests"] = write_requests
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch()
-        report["browser"] = {"name": "Chromium", "version": browser.version}
+        browser = await playwright.chromium.launch(**({"channel": browser_channel} if browser_channel else {}))
+        report["browser"] = {"name": browser_channel or "Chromium", "version": browser.version}
         context = await browser.new_context(viewport={"width": 1440, "height": 1000}, accept_downloads=True)
         context.set_default_timeout(15_000)
+
+        async def guard_request(route):
+            if route.request.method not in ("GET", "HEAD", "OPTIONS"):
+                write_requests.append({"url": route.request.url, "method": route.request.method})
+                await route.abort("blockedbyclient")
+            else:
+                await route.continue_()
+
+        await context.route("**/*", guard_request)
         page = await context.new_page()
         page.on("pageerror", lambda error: browser_errors.append(str(error)))
-        page.on("response", lambda response: http_errors.append({"url": response.url, "status": response.status}) if response.status >= 400 else None)
+
+        def record_response(response):
+            if response.status >= 400:
+                item = {"url": response.url, "status": response.status}
+                if not live and response.headers.get("x-szl-test-fixture") == "simulated":
+                    report.setdefault("simulated_http_errors", []).append(item)
+                else:
+                    http_errors.append(item)
+
+        page.on("response", record_response)
         page.on("request", lambda request: write_requests.append({"url": request.url, "method": request.method}) if request.method not in ("GET", "HEAD", "OPTIONS") else None)
         try:
             with check(report, "Read-only dashboard loads the pinned panel"):
@@ -203,39 +225,40 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 await expect(page.locator("#catalogue-filter")).to_have_value("")
                 await expect(page.locator("#page-status")).to_contain_text(f"of {len(fixture)} matching records")
 
-            with check(report, "Older search responses cannot replace the current view", fixture="SIMULATED_RESPONSE_ORDER_WITH_REAL_PUBLIC_API"):
-                stale_query = "no-such-slow-public-record"
-                captured = asyncio.Event()
-                release = asyncio.Event()
+            if not live:
+                with check(report, "Older search responses cannot replace the current view", fixture="SIMULATED_RESPONSE_ORDER_WITH_REAL_PUBLIC_API"):
+                    stale_query = "no-such-slow-public-record"
+                    captured = asyncio.Event()
+                    release = asyncio.Event()
 
-                async def delayed_response(route):
-                    query = parse_qs(urlsplit(route.request.url).query)
-                    if query.get("q") == [stale_query]:
-                        response = await route.fetch()
-                        captured.set()
-                        await asyncio.wait_for(release.wait(), timeout=15)
-                        await route.fulfill(response=response)
-                    else:
-                        await route.continue_()
+                    async def delayed_response(route):
+                        query = parse_qs(urlsplit(route.request.url).query)
+                        if query.get("q") == [stale_query]:
+                            response = await route.fetch()
+                            captured.set()
+                            await asyncio.wait_for(release.wait(), timeout=15)
+                            await route.fulfill(response=response)
+                        else:
+                            await route.continue_()
 
-                await page.route("**/api/detections?*", delayed_response)
-                try:
-                    await page.locator("#search-query").fill(stale_query)
-                    await page.locator("#search-query").press("Enter")
-                    await asyncio.wait_for(captured.wait(), timeout=15)
-                    await page.locator("#search-query").fill(published_id)
-                    await wait_query(page, lambda: page.locator("#search-query").press("Enter"), q=published_id)
-                    async with page.expect_response(lambda response: parse_qs(urlsplit(response.url).query).get("q") == [stale_query]) as old_response:
+                    await page.route("**/api/detections?*", delayed_response)
+                    try:
+                        await page.locator("#search-query").fill(stale_query)
+                        await page.locator("#search-query").press("Enter")
+                        await asyncio.wait_for(captured.wait(), timeout=15)
+                        await page.locator("#search-query").fill(published_id)
+                        await wait_query(page, lambda: page.locator("#search-query").press("Enter"), q=published_id)
+                        async with page.expect_response(lambda response: parse_qs(urlsplit(response.url).query).get("q") == [stale_query]) as old_response:
+                            release.set()
+                        await (await old_response.value).body()
+                        # Yield to the browser rendering loop, not a timing-based sleep.
+                        await page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+                        await expect(page.locator("#detection-rows [data-record]")).to_have_count(1)
+                        await expect(page.locator("#detection-rows [data-record]")).to_have_attribute("data-record", published_id)
+                        await expect(page.locator("#page-status")).to_contain_text("of 1 matching records")
+                    finally:
                         release.set()
-                    await (await old_response.value).finished()
-                    # Yield to the browser rendering loop, not a timing-based sleep.
-                    await page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
-                    await expect(page.locator("#detection-rows [data-record]")).to_have_count(1)
-                    await expect(page.locator("#detection-rows [data-record]")).to_have_attribute("data-record", published_id)
-                    await expect(page.locator("#page-status")).to_contain_text("of 1 matching records")
-                finally:
-                    release.set()
-                    await page.unroute("**/api/detections?*", delayed_response)
+                        await page.unroute("**/api/detections?*", delayed_response)
 
             with check(report, "Evidence panel binds to API values and retained artifact bytes"):
                 response = await context.request.get(f"{base_url}/api/evidence")
@@ -279,7 +302,8 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 assert await page.locator(".shell").evaluate("element => element.inert") is False
 
             with check(report, "Desktop and mobile catalogue have no document overflow"):
-                await wait_query(page, lambda: page.locator("#clear-filters").click(), offset=0)
+                reset = page.locator("#clear-filters") if await page.locator("#clear-filters").is_enabled() else page.locator("#refresh-button")
+                await wait_query(page, reset.click, offset=0)
                 for name, width, height in (("desktop", 1440, 1000), ("wide", 1920, 1080), ("tablet", 768, 1024), ("narrow", 320, 800), ("mobile", 390, 844)):
                     await page.set_viewport_size({"width": width, "height": height})
                     await page.locator("#catalogue-heading").scroll_into_view_if_needed()
@@ -326,7 +350,11 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
                 assert await page.evaluate("getComputedStyle(document.documentElement).scrollBehavior") == "auto"
                 await page.emulate_media(forced_colors="none")
 
-            with check(report, "Browser completed without page errors, HTTP errors or writes"):
+            await catalogue_flows(page, context, base_url, output, report, fixture, model,
+                                  check=check, ready=ready, wait_query=wait_query,
+                                  simulate_failures=not live)
+
+            with check(report, "Browser completed without page errors, unexpected HTTP errors or writes"):
                 assert not browser_errors, browser_errors
                 assert not http_errors, http_errors
                 assert not write_requests, write_requests
@@ -341,20 +369,59 @@ async def smoke(base_url: str, output: Path, report: dict) -> None:
             await browser.close()
 
 
+def runtime_observation(source: str, report: dict) -> None:
+    spec = importlib.util.spec_from_file_location("live_runtime", ROOT / "scripts/verify_deployment.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    report.update(expected_source=source, checks=[])
+    probe.verify(source, probe.PublicReader(), report)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts/browser")
+    parser.add_argument("--browser-channel", default=None)
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--sha", help="Exact checked-out source deployed to the canonical Space")
     args = parser.parse_args()
+    if args.live != bool(args.sha):
+        parser.error("--live and --sha must be supplied together")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"schema": "szl.seismic.browser-smoke/v1", "evidence_class": "UNKNOWN",
               "started_at": datetime.now(timezone.utc).isoformat(), "checks": [], "passed": False,
               "scope": "Local read-only browser behavior against pinned fixtures; not deployment or scientific validation",
-              "source_revision_declared": os.environ.get("GITHUB_SHA"), "python": sys.version,
-              "frontend_sha256": {name: file_sha256(ROOT / name) for name in ("frontend/index.html", "frontend/app.css", "frontend/szl/SOURCE.json", "frontend/szl/szl-design-system.css", "frontend/szl/szl-console.css")}}
+              "source_revision_declared": args.sha or os.environ.get("GITHUB_SHA"), "python": sys.version,
+              "frontend_sha256_basis": "Local checkout bytes; live served hashes are recorded in runtime_before and runtime_after",
+              "frontend_sha256": {name: file_sha256(ROOT / name) for name in ("frontend/index.html", "frontend/app.js", "frontend/app.css", "frontend/szl/SOURCE.json", "frontend/szl/szl-design-system.css", "frontend/szl/szl-console.css")}}
+    if args.live:
+        report["scope"] = "Public GET-only UI behavior with no response mocks; source and running revision verified before and after. Same operator, no independent scientific replication."
+        report["application_url"] = "https://szlholdings-szl-seismic-review.hf.space"
+        try:
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+            if head != args.sha:
+                raise RuntimeError("Live verification requires the exact source checkout")
+            subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "app.py", "frontend", "data", "models", "Dockerfile", "requirements.txt"], cwd=ROOT, check=True, capture_output=True)
+            report["runtime_before"] = {}
+            runtime_observation(args.sha, report["runtime_before"])
+            asyncio.run(smoke(report["application_url"], output, report, live=True,
+                              browser_channel=args.browser_channel))
+            report["runtime_after"] = {}
+            runtime_observation(args.sha, report["runtime_after"])
+            if report["runtime_before"] != report["runtime_after"]:
+                raise RuntimeError("Runtime identities changed during the browser checks")
+            report.update(passed=True, evidence_class="MEASURED")
+        except Exception:
+            report.update(evidence_class="BLOCKED", error=traceback.format_exc())
+            print(report["error"], file=sys.stderr)
+        finally:
+            report["finished_at"] = datetime.now(timezone.utc).isoformat()
+            (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(f"Live browser evidence: {output}", flush=True)
+        return 0 if report["passed"] else 1
     process = None
     exit_code = 1
-    with tempfile.TemporaryDirectory(prefix="szl-browser-") as directory, (output / "server.log").open("w", encoding="utf-8") as log:
+    with tempfile.TemporaryDirectory(prefix="szl-browser-", dir=output) as directory, (output / "server.log").open("w", encoding="utf-8") as log:
         try:
             with socket.socket() as port_probe:
                 port_probe.bind(("127.0.0.1", 0))
@@ -368,7 +435,7 @@ def main() -> int:
             process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
             report["health"] = wait_for_server(process, base_url)
             report["evidence_class"] = "MEASURED"
-            asyncio.run(smoke(base_url, output, report))
+            asyncio.run(smoke(base_url, output, report, browser_channel=args.browser_channel))
             report["passed"] = True
             exit_code = 0
         except Exception:
