@@ -44,7 +44,10 @@ class FakeReader:
                 "items": [{"published_consensus": "confirmed"}, {"published_consensus": "confirmed"}]},
             "/api/meta": {"import_enabled": False, "review_write_enabled": False, "storage_state": "READ_ONLY"},
         }
-        self.static = {probe.HOST + path: (probe.ROOT / file).read_bytes() for path, file in probe.STATIC.items()}
+        self.static = {
+            probe.HOST + path: probe.source_static_bytes(probe.ROOT, file)
+            for path, file in probe.STATIC.items()
+        }
         self.hub_reads = 0
         self.move_on_last_read = False
 
@@ -65,6 +68,40 @@ def test_complete_observations_require_stable_source_and_payload():
     assert reader.hub_reads == 2
     assert len(report["checks"]) == 9
     assert report["hub_revision"] == "b" * 40
+
+
+def test_static_source_normalization_preserves_lone_carriage_returns(tmp_path):
+    asset = tmp_path / "app.js"
+    asset.write_bytes(b"first\r\nsecond\rliteral\n")
+    assert probe.source_static_bytes(tmp_path, "app.js") == b"first\nsecond\rliteral\n"
+
+
+def test_crlf_checkout_static_sources_match_deployed_lf_bytes(tmp_path):
+    root = tmp_path / "crlf-checkout"
+    needed = [
+        "models/japan_assoc_logistic_v1.json",
+        "models/receipts/train-0001.json",
+        "data/source_manifest.json",
+        "data/japan_panel.csv",
+        *probe.STATIC.values(),
+    ]
+    for relative in needed:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = (probe.ROOT / relative).read_bytes()
+        if relative in probe.STATIC.values():
+            data = probe.canonical_text_bytes(data).replace(b"\n", b"\r\n")
+        target.write_bytes(data)
+
+    reader = FakeReader()
+    reader.static = {
+        probe.HOST + route: probe.source_static_bytes(probe.ROOT, path)
+        for route, path in probe.STATIC.items()
+    }
+    report = {"checks": []}
+    probe.verify(SHA, reader, report, root=root)
+    assert report["checks"][2]["route"] == "/"
+    assert report["checks"][2]["sha256"] == probe.digest(reader.static[probe.HOST + "/"])
 
 
 @pytest.mark.parametrize("fault,match", [
