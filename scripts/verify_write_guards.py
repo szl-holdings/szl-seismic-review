@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
 
-from verify_deployment import HOST, PublicReader, VerificationError, require, verify
+from verify_deployment import HOST, PublicReader, require, verify
 
 
 PROBES = (("GET", "/api/custody/detections"), ("GET", "/api/receipts"),

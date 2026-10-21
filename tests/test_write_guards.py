@@ -9,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import verify_write_guards as guards
+from verify_deployment import VerificationError
 
 
 class Response(io.BytesIO):
@@ -33,7 +34,7 @@ def test_all_probes_use_fixed_target_no_credentials_and_empty_invalid_bodies(mon
     monkeypatch.setattr(reader.opener, "open", response)
     assert all(guards.probe(reader, *item)["passed"] for item in guards.PROBES)
     assert len(requests) == 5
-    with pytest.raises(guards.VerificationError, match="Unexpected access probe"):
+    with pytest.raises(VerificationError, match="Unexpected access probe"):
         guards.probe(reader, "POST", "/api/score")
     assert len(requests) == 5
 
@@ -44,7 +45,7 @@ def test_all_probes_use_fixed_target_no_credentials_and_empty_invalid_bodies(mon
 def test_fail_open_or_unexpected_denial_never_passes(monkeypatch, response):
     reader = guards.PublicReader()
     monkeypatch.setattr(reader.opener, "open", lambda *a, **k: response)
-    with pytest.raises(guards.VerificationError):
+    with pytest.raises(VerificationError):
         guards.probe(reader, *guards.PROBES[0])
 
 
