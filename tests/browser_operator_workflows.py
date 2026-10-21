@@ -131,7 +131,8 @@ async def open_reviewer(page, identifier, token):
     await expect(page.locator("#reviewer-access")).to_be_visible()
     await page.locator("#reviewer-token").fill(token)
     async with page.expect_response(lambda r: unquote(urlsplit(r.url).path) == f"/api/detections/{identifier}"
-                                    and r.request.method == "GET") as pending:
+                                    and r.request.method == "GET"
+                                    and r.request.headers.get("authorization") == f"Bearer {token}") as pending:
         await page.locator("#open-reviewer-case").click()
     response = await pending.value
     assert response.ok
