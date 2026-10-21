@@ -39,6 +39,16 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def canonical_text_bytes(data):
+    """Return text bytes in the LF form used by the Linux publisher."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def source_static_bytes(root, path):
+    """Read a declared static text asset independent of checkout line endings."""
+    return canonical_text_bytes((root / path).read_bytes())
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -106,7 +116,7 @@ def verify(source, reader, report, root=ROOT):
     report["checks"].append("Runtime source matches expected GitHub revision")
     for route, path in STATIC.items():
         actual, _ = reader.read(HOST + route)
-        require(actual == (root / path).read_bytes(), f"Static source mismatch: {route}")
+        require(actual == source_static_bytes(root, path), f"Static source mismatch: {route}")
         report["checks"].append({"route": route, "sha256": digest(actual)})
 
     evidence = reader.json(HOST + "/api/evidence")
