@@ -13,6 +13,7 @@ import math
 import os
 import re
 import sqlite3
+import uuid
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -24,14 +25,19 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from review_store import BACKEND, HubDriver, SnapshotStore, StorageError, StorageUncertain
 
 
 ROOT = Path(__file__).resolve().parent
+PROCESS_BOOT_ID = uuid.uuid4().hex
 DATA = ROOT / "data"
 MODEL_PATH = ROOT / "models/japan_assoc_logistic_v1.json"
 DEFAULT_DB_PATH = ROOT / "work/review.sqlite3" if os.name == "nt" else Path("/tmp/szl-seismic-review.sqlite3")
 DB_PATH = Path(os.environ.get("SZL_REVIEW_DB_PATH", str(DEFAULT_DB_PATH)))
 WRITE_TOKEN = os.environ.get("SZL_REVIEW_WRITE_TOKEN", "")
+CUSTODIAN_ID = os.environ.get("SZL_REVIEW_CUSTODIAN_ID", "operator")
+STORE_MODE = os.environ.get("SZL_REVIEW_STORE", "")
+ACTIVATION_MODE = os.environ.get("SZL_REVIEW_ACTIVATION", "read-only")
 
 
 def unique_credentials(pairs):
@@ -58,8 +64,15 @@ if (not isinstance(REVIEWER_TOKENS, dict)
                or not credential_valid(token)
                for reviewer, token in REVIEWER_TOKENS.items())
         or len(set(REVIEWER_TOKENS.values())) != len(REVIEWER_TOKENS)
-        or (WRITE_TOKEN and WRITE_TOKEN in REVIEWER_TOKENS.values())):
+        or (WRITE_TOKEN and WRITE_TOKEN in REVIEWER_TOKENS.values())
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}", CUSTODIAN_ID) is None
+        or CUSTODIAN_ID in REVIEWER_TOKENS):
     raise RuntimeError("credentials must be distinct 32-512 character ASCII bearer tokens; reviewer IDs must be unique ASCII identifiers")
+if STORE_MODE not in {"", "private-hub-cas-v1"} or ACTIVATION_MODE not in {"read-only", "active"}:
+    raise RuntimeError("invalid review storage or activation mode")
+if STORE_MODE and (not WRITE_TOKEN or not REVIEWER_TOKENS or "SZL_REVIEW_CUSTODIAN_ID" not in os.environ):
+    raise RuntimeError("remote review storage requires named custodian and reviewer credentials")
+REMOTE_STORE = SnapshotStore(HubDriver(os.environ.get("SZL_REVIEW_STATE_TOKEN", ""))) if STORE_MODE else None
 SOURCE_URL = "https://doi.org/10.5281/zenodo.22059219"
 EARTHARXIV_URL = "https://eartharxiv.org/repository/view/14864/"
 
@@ -405,6 +418,10 @@ def check_input_contract(values: Any, declared_units: Any) -> dict:
 
 @contextmanager
 def database():
+    if REMOTE_STORE is not None:
+        with REMOTE_STORE.transaction() as connection:
+            yield connection
+        return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
@@ -417,6 +434,9 @@ def database():
 
 
 def init_database():
+    if REMOTE_STORE is not None:
+        # Bootstrap is a separate provisioning action, never a fallback on GET.
+        return
     with database() as db:
         db.execute("PRAGMA foreign_keys=ON")
         db.executescript("""
@@ -469,9 +489,8 @@ def bearer_token(authorization: str | None) -> str:
 
 
 def hosted_write_blocked() -> bool:
-    # This standalone service has no qualified durable Space store. Credentials
-    # or a different path do not establish persistence across container changes.
-    return bool(os.environ.get("SPACE_ID"))
+    return (bool(os.environ.get("SPACE_ID")) and REMOTE_STORE is None
+            or REMOTE_STORE is not None and ACTIVATION_MODE != "active")
 
 
 def require_write_storage():
@@ -479,17 +498,20 @@ def require_write_storage():
         raise HTTPException(503, "hosted writes blocked: durable review storage is not qualified")
 
 
-def require_operator(authorization: str | None):
-    require_write_storage()
+def require_operator(authorization: str | None, *, write=False):
+    if write or REMOTE_STORE is None:
+        require_write_storage()
     if not WRITE_TOKEN:
         raise HTTPException(503, "operator writes are disabled on this deployment")
     supplied = bearer_token(authorization)
     if not hmac.compare_digest(supplied, WRITE_TOKEN):
         raise HTTPException(401, "operator token required")
+    return CUSTODIAN_ID
 
 
-def reviewer_identity(authorization: str | None) -> str:
-    require_write_storage()
+def reviewer_identity(authorization: str | None, *, write=False) -> str:
+    if write or REMOTE_STORE is None:
+        require_write_storage()
     if not REVIEWER_TOKENS:
         raise HTTPException(503, "reviewer writes are disabled on this deployment")
     supplied = bearer_token(authorization)
@@ -500,7 +522,8 @@ def reviewer_identity(authorization: str | None) -> str:
 
 
 def detail_identity(authorization: str | None) -> str | None:
-    require_write_storage()
+    if REMOTE_STORE is None:
+        require_write_storage()
     supplied = bearer_token(authorization)
     if WRITE_TOKEN and hmac.compare_digest(supplied, WRITE_TOKEN):
         return None  # A source custodian may attach traces, but cannot claim a reviewer verdict.
@@ -542,7 +565,7 @@ def verify_write_receipts(db: sqlite3.Connection) -> dict:
         previous = row["receipt_sha256"]
     return {"count": count, "head_sha256": previous if count else None,
             "chain_self_consistent": valid, "signature_status": "UNSIGNED",
-            "storage_durability": "UNVERIFIED"}
+            "storage_durability": "REMOTE_COMMIT_BEFORE_ACK" if REMOTE_STORE else "UNVERIFIED"}
 
 
 def published_card(identifier: str, row: dict) -> dict:
@@ -576,6 +599,15 @@ def imported_card(row: sqlite3.Row) -> dict:
 
 
 app = FastAPI(title="SZL Seismic Review", version="0.2.0", docs_url="/api/docs", redoc_url=None)
+
+
+@app.exception_handler(StorageError)
+async def storage_error_handler(request: Request, error: StorageError):
+    uncertain = isinstance(error, StorageUncertain)
+    return JSONResponse(status_code=503, headers={"Cache-Control": "no-store"},
+                        content={"detail": "remote commit outcome unknown; inspect receipts before retrying" if uncertain
+                                 else "durable review storage unavailable; operation not acknowledged",
+                                 "evidence_class": "UNKNOWN" if uncertain else "BLOCKED"})
 app.mount("/assets", StaticFiles(directory=ROOT / "frontend"), name="assets")
 
 
@@ -601,6 +633,7 @@ def index():
 @app.get("/healthz")
 def health():
     return {"ok": True, "fixture_verified": True, "model_id": MODEL["id"],
+            "process_boot_id": PROCESS_BOOT_ID,
             "training_receipt_chain_self_consistent": True,
             "training_receipt_signature_status": "UNSIGNED"}
 
@@ -641,11 +674,34 @@ def meta():
         },
         "review_write_enabled": bool(REVIEWER_TOKENS) and not hosted_write_blocked(),
         "import_enabled": bool(WRITE_TOKEN) and not hosted_write_blocked(),
-        "storage_state": "LOCAL_FILE_UNVERIFIED_DURABILITY" if (WRITE_TOKEN or REVIEWER_TOKENS) and not hosted_write_blocked() else "READ_ONLY",
+        "storage_state": ("REMOTE_COMMIT_BEFORE_ACK" if REMOTE_STORE else "LOCAL_FILE_UNVERIFIED_DURABILITY") if (WRITE_TOKEN or REVIEWER_TOKENS) and not hosted_write_blocked() else "READ_ONLY",
         "write_activation": {"evidence_class": "BLOCKED" if hosted_write_blocked() else "DECLARED",
-                             "reason": "Durable review storage is not qualified for this Space" if hosted_write_blocked() else "Local research credentials only; storage durability is unverified"},
+                             "mode": "active" if REMOTE_STORE and not hosted_write_blocked() else "read-only",
+                             "backend": BACKEND if REMOTE_STORE else "LOCAL_SQLITE",
+                             "reason": "Durable review storage is not active for this Space" if hosted_write_blocked() else "Remote snapshot commit before acknowledgement; low-volume research pilot" if REMOTE_STORE else "Local research credentials only; storage durability is unverified"},
         "waveforms_in_reference_archive": False,
     }
+
+
+@app.get("/api/storage/status")
+def storage_status():
+    if REMOTE_STORE is None:
+        return {"backend": "LOCAL_SQLITE", "state": "BLOCKED" if os.environ.get("SPACE_ID") else "UNQUALIFIED",
+                "evidence_class": "BLOCKED" if os.environ.get("SPACE_ID") else "DECLARED",
+                "receipt_minted": False}
+    return {**REMOTE_STORE.status(), "process_boot_id": PROCESS_BOOT_ID}
+
+
+@app.get("/api/access")
+def access(authorization: str | None = Header(None)):
+    supplied = bearer_token(authorization)
+    if WRITE_TOKEN and hmac.compare_digest(supplied, WRITE_TOKEN):
+        identity = require_operator(authorization)
+        role = "custodian"
+    else:
+        identity = reviewer_identity(authorization)
+        role = "reviewer"
+    return {"identity": identity, "role": role, "evidence_class": "DECLARED", "receipt_minted": False}
 
 
 @app.get("/api/summary")
@@ -671,7 +727,8 @@ def summary():
 def receipts(authorization: str | None = Header(None)):
     require_operator(authorization)
     with database() as db:
-        return verify_write_receipts(db)
+        return {**verify_write_receipts(db), "receipt_minted": False,
+                "entries": [dict(row) for row in db.execute("SELECT * FROM write_receipts ORDER BY sequence")]}
 
 
 @app.get("/api/custody/detections")
@@ -844,7 +901,7 @@ async def score(request: Request):
 
 @app.post("/api/catalogues/import")
 async def import_catalogue(request: Request, catalogue: str, region: str, authorization: str | None = Header(None)):
-    require_operator(authorization)
+    custodian = require_operator(authorization, write=True)
     if not catalogue or len(catalogue) > 100 or not region or len(region) > 100:
         raise HTTPException(422, "catalogue and region must be 1-100 characters")
     body = await bounded_body(request, 1_000_000, "CSV")
@@ -880,7 +937,7 @@ async def import_catalogue(request: Request, catalogue: str, region: str, author
             db.executemany("INSERT INTO detections (id,event_id,catalogue,region,source_sha256,features_json,metadata_json,imported_at) VALUES (?,?,?,?,?,?,?,?)", prepared)
         except sqlite3.IntegrityError:
             raise HTTPException(409, "this CSV was already imported") from None
-        receipt = append_write_receipt(db, "CATALOGUE_IMPORTED", source_hash, "operator",
+        receipt = append_write_receipt(db, "CATALOGUE_IMPORTED", source_hash, custodian,
                                        digest_bytes(canonical_json({"source_sha256": source_hash,
                                                                     "record_count": len(prepared),
                                                                     "catalogue": catalogue, "region": region})))
@@ -890,7 +947,7 @@ async def import_catalogue(request: Request, catalogue: str, region: str, author
 
 @app.post("/api/detections/{detection_id}/waveform")
 async def attach_waveform(detection_id: str, request: Request, authorization: str | None = Header(None)):
-    require_operator(authorization)
+    custodian = require_operator(authorization, write=True)
     body = await bounded_body(request, 1_000_000, "waveform JSON")
     try:
         evidence = json.loads(body)
@@ -937,13 +994,13 @@ async def attach_waveform(detection_id: str, request: Request, authorization: st
                              (encoded.decode("utf-8"), waveform_hash, detection_id))
         if updated.rowcount != 1:
             raise HTTPException(409, "waveform evidence is locked after first attachment")
-        receipt = append_write_receipt(db, "WAVEFORM_ATTACHED", detection_id, "operator", waveform_hash)
+        receipt = append_write_receipt(db, "WAVEFORM_ATTACHED", detection_id, custodian, waveform_hash)
     return {"waveform_sha256": waveform_hash, "stations": 5, "receipt": receipt}
 
 
 @app.post("/api/reviews")
 async def submit_review(request: Request, authorization: str | None = Header(None)):
-    reviewer_id = reviewer_identity(authorization)
+    reviewer_id = reviewer_identity(authorization, write=True)
     body = await bounded_body(request, 16_384, "review request")
     try:
         payload = json.loads(body)

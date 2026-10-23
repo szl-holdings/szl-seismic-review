@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+import re
 from urllib.parse import parse_qs, urlsplit
 
 from playwright.async_api import expect
@@ -49,13 +50,15 @@ async def download_export(page, output: Path, report: dict, name: str) -> dict:
 
 
 async def catalogue_flows(page, context, base_url, output, report, fixture, model,
-                          *, check, ready, wait_query, simulate_failures=True):
+                          *, check, ready, wait_query, simulate_failures=True,
+                          expected_mode="read-only"):
     """Exercise pagination, filter/export parity and bounded read-failure recovery.
 
     The injected failures and delayed response run only against the local fixture
     service. Deployed checks use the same real interactions without interception.
     """
     verdicts = fixture_verdicts()
+    assert expected_mode in ("read-only", "active")
     assert Counter(verdicts.values()) == model["class_counts"]
     published_ids = [f"published:{row['panel_id']}" for row in fixture]
     rejected_ids = [f"published:{row['panel_id']}" for row in fixture
@@ -67,11 +70,16 @@ async def catalogue_flows(page, context, base_url, output, report, fixture, mode
 
     async def clear():
         if await page.locator("#clear-filters").is_enabled():
-            return await wait_query(page, lambda: page.locator("#clear-filters").click(),
-                                    offset=0, q="", catalogue="", consensus="", origin="")
-        while await page.locator("#prev-button").is_enabled():
-            await wait_query(page, lambda: page.locator("#prev-button").click())
-        return await wait_query(page, lambda: page.locator("#refresh-button").click(), offset=0)
+            result = await wait_query(page, lambda: page.locator("#clear-filters").click(),
+                                      offset=0, q="", catalogue="", consensus="", origin="")
+        else:
+            while await page.locator("#prev-button").is_enabled():
+                await wait_query(page, lambda: page.locator("#prev-button").click())
+            result = await wait_query(page, lambda: page.locator("#refresh-button").click(), offset=0)
+        if expected_mode == "active":
+            result = await wait_query(page, lambda: page.locator("#catalogue-filter").select_option("__published__"),
+                                      origin="published", offset=0)
+        return result
 
     await page.set_viewport_size({"width": 1440, "height": 1000})
     await clear()
@@ -140,14 +148,36 @@ async def catalogue_flows(page, context, base_url, output, report, fixture, mode
         await clear()
         imported = await wait_query(page, lambda: page.locator("#catalogue-filter").select_option("__imports__"),
                                     origin="imported", offset=0)
-        assert imported["total"] == 0 and imported["items"] == [], "Pinned read-only deployment unexpectedly contains imported cases"
-        await expect(page.locator("#page-status")).to_have_text("0 matching records")
+        if expected_mode == "read-only":
+            assert imported["total"] == 0 and imported["items"] == [], "Pinned read-only deployment unexpectedly contains imported cases"
+            await expect(page.locator("#page-status")).to_have_text("0 matching records")
+        else:
+            assert type(imported["total"]) is int and imported["total"] >= 0
+            imported_export = await download_export(page, output, report, "blind-import-catalogue.json")
+            assert imported_export["query"] == {"catalogue": None, "origin": "imported", "q": "", "consensus": None}
+            for item in [*imported["items"], *imported_export["items"]]:
+                assert set(item) == {"id", "event_id", "catalogue", "region", "origin", "published_consensus",
+                                     "review_count", "waveform_ready", "score_status", "confirmability_score"}
+                assert re.fullmatch(r"import:[0-9a-f]{64}", item["id"])
+                assert item["event_id"] is None and item["catalogue"] == "Blind import"
+                assert item["region"] == "Undisclosed during review" and item["origin"] == "OPERATOR_IMPORT"
+                assert item["published_consensus"] is None and item["review_count"] is None
+                assert item["confirmability_score"] is None and item["score_status"] == "BLIND_REVIEW_PENDING"
+                assert type(item["waveform_ready"]) is bool
+            assert await visible_ids() == [item["id"] for item in imported["items"]]
+            assert imported_export["count"] == len(imported_export["items"])
+            assert imported_export["receipt_minted"] is False
+            # A published verdict cannot expose a locked private review.
+            filtered = await wait_query(page, lambda: page.locator("#verdict-filter").select_option("confirmed"),
+                                        origin="imported", consensus="confirmed", offset=0)
+            assert filtered["items"] == [] and filtered["total"] == 0
+            await expect(page.locator("#page-status")).to_have_text("0 matching records")
         await expect(page.locator("#prev-button")).to_be_disabled()
         await expect(page.locator("#next-button")).to_be_disabled()
         await clear()
         assert await visible_ids() == published_ids[:page_size]
         await expect(page.locator("#search-query")).to_have_value("")
-        await expect(page.locator("#catalogue-filter")).to_have_value("")
+        await expect(page.locator("#catalogue-filter")).to_have_value("__published__" if expected_mode == "active" else "")
         await expect(page.locator("#verdict-filter")).to_have_value("")
 
     if simulate_failures:
