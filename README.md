@@ -44,7 +44,7 @@ The published archive does **not** contain continuous waveform traces, so the 20
 
 ## Run locally
 
-Python 3.12 or newer is required (the pinned numpy 2.5.3 and scipy 1.18.1 in `requirements-dev.txt` need it). From this directory:
+Python 3.12 or newer is required by the pinned scientific dependencies in `requirements-dev.txt`. From this directory:
 
 ```bash
 python -m venv .venv
