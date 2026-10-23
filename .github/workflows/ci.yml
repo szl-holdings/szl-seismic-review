@@ -21,7 +21,7 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
       - name: Verify syntax and tests
         run: |
-          python -m compileall -q app.py scripts tests
+          python -m compileall -q app.py review_store.py scripts tests
           python -m pytest -q tests
   browser:
     runs-on: ubuntu-latest

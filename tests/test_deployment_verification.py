@@ -2,10 +2,11 @@
 
 import importlib.util
 from http.client import IncompleteRead
+import io
 import json
 from pathlib import Path
 import sys
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -50,6 +51,10 @@ class FakeReader:
         }
         self.hub_reads = 0
         self.move_on_last_read = False
+        self.denied_reads = []
+
+    def denied(self, url):
+        self.denied_reads.append(url)
 
     def read(self, url):
         return self.static[url], {}
@@ -60,6 +65,112 @@ class FakeReader:
             if self.move_on_last_read and self.hub_reads == 2:
                 self.responses[probe.HUB]["sha"] = "c" * 40
         return self.responses[url.removeprefix(probe.HOST)]
+
+
+def active_reader():
+    reader = FakeReader()
+    reader.responses["/api/summary"]["imported_count"] = 1
+    reader.responses["/api/meta"] = {
+        "import_enabled": True, "review_write_enabled": True, "storage_state": "REMOTE_COMMIT_BEFORE_ACK",
+        "write_activation": {"evidence_class": "DECLARED", "mode": "active", "backend": probe.ACTIVE_BACKEND},
+    }
+    reader.responses["/api/storage/status"] = {"backend": probe.ACTIVE_BACKEND, "state": "READY",
+                                             "evidence_class": "DECLARED", "receipt_minted": False}
+    reader.responses["/api/detections?q=j001&origin=published"] = reader.responses["/api/detections?q=j001"]
+    reader.responses["/api/export?consensus=confirmed&limit=2&origin=published"] = reader.responses["/api/export?consensus=confirmed&limit=2"]
+    item = {"id": "import:" + "d" * 64, "event_id": None, "catalogue": "Blind import",
+            "region": "Undisclosed during review", "origin": "OPERATOR_IMPORT", "published_consensus": None,
+            "review_count": None, "waveform_ready": True, "score_status": "BLIND_REVIEW_PENDING",
+            "confirmability_score": None}
+    reader.responses["/api/detections?origin=imported&limit=200&offset=0"] = {"total": 1, "offset": 0, "items": [item]}
+    reader.responses["/api/export?origin=imported&limit=200&offset=0"] = {
+        "total": 1, "count": 1, "offset": 0, "items": [item.copy()], "truncated": False,
+        "next_offset": None, "receipt_minted": False, "query": {"origin": "imported"},
+    }
+    return reader
+
+
+def test_active_mode_keeps_private_cards_blind_and_checks_anonymous_denial():
+    reader, report = active_reader(), {"checks": []}
+    probe.verify(SHA, reader, report, expected_mode="active")
+    assert report["expected_mode"] == "active" and reader.hub_reads == 2
+    assert reader.denied_reads == [probe.HOST + "/api/custody/detections", probe.HOST + "/api/receipts",
+                                   probe.HOST + "/api/detections/import%3A" + "d" * 64]
+
+
+def test_active_service_never_passes_the_default_read_only_check():
+    with pytest.raises(probe.VerificationError, match="Public panel inventory mismatch"):
+        probe.verify(SHA, active_reader(), {"checks": []})
+
+
+def test_invalid_expected_mode_is_rejected_before_network_access():
+    reader = FakeReader()
+    with pytest.raises(probe.VerificationError, match="Expected mode"):
+        probe.verify(SHA, reader, {"checks": []}, expected_mode="auto")
+    assert reader.hub_reads == 0
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("/api/meta", "import_enabled", False), ("/api/meta", "review_write_enabled", False),
+    ("/api/meta", "storage_state", "LOCAL_FILE_UNVERIFIED_DURABILITY"),
+    ("/api/meta", "write_activation", {"evidence_class": "MEASURED", "mode": "active", "backend": probe.ACTIVE_BACKEND}),
+    ("/api/storage/status", "backend", "OTHER"), ("/api/storage/status", "state", "UNAVAILABLE"),
+    ("/api/storage/status", "receipt_minted", True), ("/api/storage/status", "evidence_class", "MEASURED"),
+])
+def test_active_mode_requires_the_explicit_storage_contract(section, key, value):
+    reader = active_reader()
+    reader.responses[section][key] = value
+    with pytest.raises(probe.VerificationError, match="Active (write configuration|storage readiness) mismatch"):
+        probe.verify(SHA, reader, {"checks": []}, expected_mode="active")
+
+
+@pytest.mark.parametrize("route", ["/api/detections?origin=imported&limit=200&offset=0",
+                                   "/api/export?origin=imported&limit=200&offset=0"])
+@pytest.mark.parametrize("key,value", [("event_id", "private-source-event"), ("reviews", []),
+                                      ("source_sha256", "secret"), ("review_count", 1),
+                                      ("id", "import:private-source-event"), ("confirmability_score", 0.5)])
+def test_public_import_disclosure_blocks_active_verification(route, key, value):
+    reader = active_reader()
+    reader.responses[route]["items"][0][key] = value
+    with pytest.raises(probe.VerificationError, match="Public import"):
+        probe.verify(SHA, reader, {"checks": []}, expected_mode="active")
+
+
+def test_active_mode_does_not_require_an_import_before_activation():
+    reader = active_reader()
+    reader.responses["/api/summary"]["imported_count"] = 0
+    for route in ("/api/detections?origin=imported&limit=200&offset=0", "/api/export?origin=imported&limit=200&offset=0"):
+        reader.responses[route].update(total=0, count=0, items=[])
+    probe.verify(SHA, reader, {"checks": []}, expected_mode="active")
+    assert len(reader.denied_reads) == 2
+
+
+def test_anonymous_get_denial_uses_no_credentials_and_requires_explicit_401(monkeypatch):
+    reader = probe.PublicReader()
+    def denied(request, timeout):
+        assert request.get_method() == "GET" and timeout == 20
+        assert not request.has_header("Authorization") and not request.has_header("Cookie")
+        raise HTTPError(request.full_url, 401, "SIMULATED", {"Cache-Control": "no-store"},
+                        io.BytesIO(b'{"detail":"operator token required"}'))
+    monkeypatch.setattr(reader.opener, "open", denied)
+    reader.denied(probe.HOST + "/api/receipts")
+
+
+@pytest.mark.parametrize("status,body,cache", [
+    (200, b'{"detail":"operator token required"}', "no-store"),
+    (503, b'{"detail":"operator token required"}', "no-store"),
+    (302, b'{"detail":"operator token required"}', "no-store"),
+    (401, b'{"detail":"operator token required","records":[]}', "no-store"),
+    (401, b'{"detail":"operator token required"}', "public"),
+    (401, b"x" * 4097, "no-store"),
+])
+def test_unexpected_anonymous_read_responses_fail_closed(monkeypatch, status, body, cache):
+    reader = probe.PublicReader()
+    def denied(request, timeout):
+        raise HTTPError(request.full_url, status, "SIMULATED", {"Cache-Control": cache}, io.BytesIO(body))
+    monkeypatch.setattr(reader.opener, "open", denied)
+    with pytest.raises(probe.VerificationError):
+        reader.denied(probe.HOST + "/api/receipts")
 
 
 def test_complete_observations_require_stable_source_and_payload():

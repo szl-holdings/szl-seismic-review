@@ -4,6 +4,13 @@ name: Publish Seismic Review to Hugging Face
 # The readiness job verifies CI and CodeQL at the exact dispatched main commit.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Expected hosted write activation mode
+        type: choice
+        options: [read-only, active]
+        default: read-only
+        required: true
 
 permissions:
   contents: read
@@ -73,11 +80,13 @@ jobs:
       - name: Verify public runtime against the published source
         env:
           SOURCE_SHA: ${{ github.sha }}
-        run: python scripts/verify_deployment.py --sha "$SOURCE_SHA" --output artifacts/runtime-verification.json
-      - name: Verify hosted custody and write routes deny access
+          EXPECTED_MODE: ${{ inputs.mode }}
+        run: python scripts/verify_deployment.py --sha "$SOURCE_SHA" --mode "$EXPECTED_MODE" --output artifacts/runtime-verification.json
+      - name: Verify hosted custody and write routes deny anonymous access
         env:
           SOURCE_SHA: ${{ github.sha }}
-        run: python scripts/verify_write_guards.py --sha "$SOURCE_SHA" --output artifacts/write-guards.json
+          EXPECTED_MODE: ${{ inputs.mode }}
+        run: python scripts/verify_write_guards.py --sha "$SOURCE_SHA" --mode "$EXPECTED_MODE" --output artifacts/write-guards.json
       - name: Install pinned browser requirements
         run: python -m pip install --disable-pip-version-check -r requirements-browser.txt
       - name: Install Chromium
@@ -85,7 +94,8 @@ jobs:
       - name: Verify live search, filters, exports and evidence views
         env:
           SOURCE_SHA: ${{ github.sha }}
-        run: python tests/browser_smoke.py --live --sha "$SOURCE_SHA" --output-dir artifacts/live-browser
+          EXPECTED_MODE: ${{ inputs.mode }}
+        run: python tests/browser_smoke.py --live --sha "$SOURCE_SHA" --mode "$EXPECTED_MODE" --output-dir artifacts/live-browser
       - name: Retain runtime observations including failures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

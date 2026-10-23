@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -22,6 +23,8 @@ HOST = "https://szlholdings-szl-seismic-review.hf.space"
 HUB = f"https://huggingface.co/api/spaces/{SPACE}"
 REPOSITORY = "https://github.com/szl-holdings/szl-seismic-review"
 MAX_BYTES = 2_000_000
+MODES = ("read-only", "active")
+ACTIVE_BACKEND = "HF_PRIVATE_DATASET_CAS_V1"
 STATIC = {"/": "frontend/index.html", "/assets/app.js": "frontend/app.js",
           "/assets/app.css": "frontend/app.css"}
 
@@ -84,8 +87,73 @@ class PublicReader:
         require(isinstance(value, dict), "Expected a JSON object.")
         return value
 
+    def denied(self, url):
+        """Observe a bounded anonymous GET denial without accepting redirects."""
+        require(url.startswith(HOST + "/api/"), "Unexpected access target.")
+        request = Request(url, headers={"User-Agent": "szl-seismic-runtime-verification",
+                                        "Cache-Control": "no-cache"}, method="GET")
+        try:
+            response = self.opener.open(request, timeout=20)
+        except HTTPError as error:
+            response = error
+        except (URLError, TimeoutError, OSError, HTTPException):
+            raise VerificationError("Access endpoint unavailable from this runner.") from None
+        with response:
+            raw = response.read(4097)
+            require(len(raw) <= 4096, "Access denial response exceeded size limit.")
+            require(response.code == 401, "Anonymous private read did not return HTTP 401.")
+            require(response.headers.get("Cache-Control") == "no-store", "Access response is cacheable.")
+            value = json.loads(raw)
+            require(isinstance(value, dict) and set(value) == {"detail"}
+                    and value["detail"] in ("operator token required", "reviewer token required"),
+                    "Unexpected anonymous access denial body.")
 
-def verify(source, reader, report, root=ROOT):
+
+def require_blind_import(item):
+    """Reject extra fields as well as revealed values in a public import card."""
+    expected = {"id", "event_id", "catalogue", "region", "origin", "published_consensus",
+                "review_count", "waveform_ready", "score_status", "confirmability_score"}
+    require(isinstance(item, dict) and set(item) == expected, "Public import fields disclose unexpected data.")
+    require(isinstance(item["id"], str) and bool(re.fullmatch(r"import:[0-9a-f]{64}", item["id"])),
+            "Public import identifier is not opaque.")
+    require(item["event_id"] is None and item["catalogue"] == "Blind import"
+            and item["region"] == "Undisclosed during review" and item["origin"] == "OPERATOR_IMPORT"
+            and item["published_consensus"] is None and item["review_count"] is None
+            and item["confirmability_score"] is None and item["score_status"] == "BLIND_REVIEW_PENDING"
+            and type(item["waveform_ready"]) is bool, "Public import blindness mismatch.")
+
+
+def verify_active_access(reader, report):
+    """Sample bounded public cards/exports; authentication remains mandatory."""
+    for route in ("/api/custody/detections", "/api/receipts"):
+        reader.denied(HOST + route)
+    identifiers = set()
+    for route in ("/api/detections?origin=imported&limit=200&offset=0",
+                  "/api/export?origin=imported&limit=200&offset=0"):
+        value = reader.json(HOST + route)
+        items, total = value.get("items"), value.get("total")
+        require(isinstance(items, list) and type(total) is int and total >= 0
+                and len(items) == min(total, 200) and value.get("offset") == 0,
+                "Bounded import inventory mismatch.")
+        for item in items:
+            require_blind_import(item)
+            identifiers.add(item["id"])
+        require(len({item["id"] for item in items}) == len(items), "Duplicate public import identifiers.")
+        if route.startswith("/api/export"):
+            require(value.get("count") == len(items) and value.get("receipt_minted") is False
+                    and value.get("query", {}).get("origin") == "imported"
+                    and value.get("truncated") is (total > len(items))
+                    and value.get("next_offset") == (len(items) if total > len(items) else None),
+                    "Bounded blind export metadata mismatch.")
+    # A representative detail read adds an auth check without unbounded requests.
+    if identifiers:
+        reader.denied(HOST + "/api/detections/" + quote(sorted(identifiers)[0], safe=""))
+    report["checks"].append("Bounded imported cards and exports stay blind; private reads deny anonymous access")
+
+
+def verify(source, reader, report, root=ROOT, expected_mode="read-only"):
+    require(expected_mode in MODES, "Expected mode must be read-only or active.")
+    report["expected_mode"] = expected_mode
     require(bool(re.fullmatch(r"[0-9a-f]{40}", source)), "Expected a full source SHA.")
     model_bytes = (root / "models/japan_assoc_logistic_v1.json").read_bytes()
     model = json.loads(model_bytes)
@@ -136,13 +204,16 @@ def verify(source, reader, report, root=ROOT):
     report["checks"].append("Model, evaluation, data and receipt identities retain their evidence limits")
 
     summary = reader.json(HOST + "/api/summary")
-    require(summary.get("published_count") == panel_count and summary.get("imported_count") == 0,
+    require(summary.get("published_count") == panel_count
+            and (summary.get("imported_count") == 0 if expected_mode == "read-only"
+                 else type(summary.get("imported_count")) is int and summary["imported_count"] >= 0),
             "Public panel inventory mismatch.")
     require(all(summary.get(key) == value for key, value in model["class_counts"].items()), "Panel verdict counts mismatch.")
-    search = reader.json(HOST + "/api/detections?q=j001")
+    published_scope = "&origin=published" if expected_mode == "active" else ""
+    search = reader.json(HOST + "/api/detections?q=j001" + published_scope)
     require(search.get("total") == 1 and len(search.get("items", [])) == 1
             and search["items"][0].get("id") == "published:J001", "Published case search mismatch.")
-    exported = reader.json(HOST + "/api/export?consensus=confirmed&limit=2")
+    exported = reader.json(HOST + "/api/export?consensus=confirmed&limit=2" + published_scope)
     require(exported.get("count") == 2 and len(exported.get("items", [])) == 2
             and exported.get("total") == model["class_counts"]["confirmed"]
             and exported.get("truncated") is True and exported.get("next_offset") == 2
@@ -150,9 +221,22 @@ def verify(source, reader, report, root=ROOT):
     require(all(item.get("published_consensus") == "confirmed" for item in exported["items"]), "Export filter mismatch.")
     report["checks"].append("Published counts, case search and bounded filtered export")
     meta = reader.json(HOST + "/api/meta")
-    require(meta.get("import_enabled") is False and meta.get("review_write_enabled") is False
-            and meta.get("storage_state") == "READ_ONLY", "Public write configuration mismatch.")
-    report["checks"].append("Public service remains read-only")
+    if expected_mode == "read-only":
+        require(meta.get("import_enabled") is False and meta.get("review_write_enabled") is False
+                and meta.get("storage_state") == "READ_ONLY", "Public write configuration mismatch.")
+        report["checks"].append("Public service remains read-only")
+    else:
+        activation = meta.get("write_activation", {})
+        require(meta.get("import_enabled") is True and meta.get("review_write_enabled") is True
+                and meta.get("storage_state") == "REMOTE_COMMIT_BEFORE_ACK"
+                and activation.get("evidence_class") == "DECLARED" and activation.get("mode") == "active"
+                and activation.get("backend") == ACTIVE_BACKEND, "Active write configuration mismatch.")
+        storage = reader.json(HOST + "/api/storage/status")
+        require(storage.get("backend") == ACTIVE_BACKEND and storage.get("state") == "READY"
+                and storage.get("evidence_class") == "DECLARED" and storage.get("receipt_minted") is False,
+                "Active storage readiness mismatch.")
+        report["checks"].append("Active backend and commit-before-ack configuration are DECLARED ready")
+        verify_active_access(reader, report)
 
     require(binding() == build, "Runtime source changed during verification.")
     final_hub = reader.json(HUB)
@@ -164,6 +248,7 @@ def verify(source, reader, report, root=ROOT):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sha", required=True)
+    parser.add_argument("--mode", choices=MODES, default="read-only")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     report = {"schema": "szl.seismic.runtime-verification/v1", "evidence_class": "BLOCKED",
@@ -171,7 +256,7 @@ def main():
               "application_url": HOST, "passed": False, "checks": [],
               "boundary": "Separate public GET readback from the uploader; same operator, no independent scientific replication or certification."}
     try:
-        verify(args.sha, PublicReader(), report)
+        verify(args.sha, PublicReader(), report, expected_mode=args.mode)
         report.update(passed=True, evidence_class="MEASURED")
     except (VerificationError, OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as exc:
         report["error"] = str(exc)

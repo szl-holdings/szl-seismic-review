@@ -94,8 +94,15 @@ async def wait_query(page, action, **query) -> dict:
     return payload
 
 
+async def select_published_scope(page, expected_mode):
+    if expected_mode == "active":
+        return await wait_query(page, lambda: page.locator("#catalogue-filter").select_option("__published__"),
+                                origin="published", offset=0)
+
+
 async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False,
-                browser_channel: str | None = None) -> None:
+                browser_channel: str | None = None, expected_mode: str = "read-only") -> None:
+    assert expected_mode in ("read-only", "active")
     with (ROOT / "data/japan_panel.csv").open(encoding="utf-8", newline="") as handle:
         fixture = list(csv.DictReader(handle))
     model = json.loads((ROOT / "models/japan_assoc_logistic_v1.json").read_text(encoding="utf-8"))
@@ -136,21 +143,35 @@ async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False
         page.on("response", record_response)
         page.on("request", lambda request: write_requests.append({"url": request.url, "method": request.method}) if request.method not in ("GET", "HEAD", "OPTIONS") else None)
         try:
-            with check(report, "Read-only dashboard loads the pinned panel"):
+            with check(report, "Dashboard loads the pinned panel and expected write configuration"):
                 response = await page.goto(base_url, wait_until="domcontentloaded")
                 assert response is not None and response.ok
                 await ready(page)
                 await expect(page.locator("#count-panel")).to_have_text(str(len(fixture)))
-                await expect(page.locator("#write-state")).to_have_text("Read only")
-                await expect(page.locator("#import-button")).to_be_disabled()
-                await expect(page.locator("#detection-rows [data-record]")).to_have_count(20)
-                await expect(page.locator("#page-status")).to_contain_text(f"of {len(fixture)} matching records")
+                if expected_mode == "read-only":
+                    await expect(page.locator("#write-state")).to_have_text("Read only")
+                    await expect(page.locator("#import-button")).to_be_disabled()
+                    await expect(page.locator("#detection-rows [data-record]")).to_have_count(20)
+                    await expect(page.locator("#page-status")).to_contain_text(f"of {len(fixture)} matching records")
+                else:
+                    await expect(page.locator("#write-state")).to_have_text("Custody + review enabled")
+                    await expect(page.locator("#storage-state")).to_have_text("Remote saved state · DECLARED")
+                    await expect(page.locator("#storage-explanation")).to_contain_text("receipts remain unsigned")
 
             with check(report, "Skip link transfers keyboard focus to the main landmark"):
                 await page.keyboard.press("Tab")
                 await expect(page.locator(".skip-link")).to_be_focused()
                 await page.keyboard.press("Enter")
                 await expect(page.locator("#overview")).to_be_focused()
+
+            with check(report, "Published panel scope excludes mutable imported cases"):
+                result = await wait_query(page, lambda: page.locator("#catalogue-filter").select_option("__published__"),
+                                          origin="published", offset=0)
+                assert result["total"] == len(fixture)
+                assert all(item["origin"] == "PUBLISHED_PANEL" for item in result["items"])
+                await expect(page.locator("#detection-rows [data-record]")).to_have_count(20)
+                if expected_mode == "read-only":
+                    await wait_query(page, lambda: page.locator("#clear-filters").click(), offset=0)
 
             with check(report, "Canonical primary action remains readable at rest, hover and keyboard focus"):
                 action = page.locator(".hero-actions .btn-primary")
@@ -223,6 +244,7 @@ async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False
                 await expect(page.locator("#search-query")).to_be_focused()
                 await expect(page.locator("#search-query")).to_have_value("")
                 await expect(page.locator("#catalogue-filter")).to_have_value("")
+                await select_published_scope(page, expected_mode)
                 await expect(page.locator("#page-status")).to_contain_text(f"of {len(fixture)} matching records")
 
             if not live:
@@ -304,6 +326,7 @@ async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False
             with check(report, "Desktop and mobile catalogue have no document overflow"):
                 reset = page.locator("#clear-filters") if await page.locator("#clear-filters").is_enabled() else page.locator("#refresh-button")
                 await wait_query(page, reset.click, offset=0)
+                await select_published_scope(page, expected_mode)
                 for name, width, height in (("desktop", 1440, 1000), ("wide", 1920, 1080), ("tablet", 768, 1024), ("narrow", 320, 800), ("mobile", 390, 844)):
                     await page.set_viewport_size({"width": width, "height": height})
                     await page.locator("#catalogue-heading").scroll_into_view_if_needed()
@@ -352,7 +375,7 @@ async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False
 
             await catalogue_flows(page, context, base_url, output, report, fixture, model,
                                   check=check, ready=ready, wait_query=wait_query,
-                                  simulate_failures=not live)
+                                  simulate_failures=not live, expected_mode=expected_mode)
 
             with check(report, "Browser completed without page errors, unexpected HTTP errors or writes"):
                 assert not browser_errors, browser_errors
@@ -369,12 +392,12 @@ async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False
             await browser.close()
 
 
-def runtime_observation(source: str, report: dict) -> None:
+def runtime_observation(source: str, report: dict, expected_mode: str = "read-only") -> None:
     spec = importlib.util.spec_from_file_location("live_runtime", ROOT / "scripts/verify_deployment.py")
     probe = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(probe)
     report.update(expected_source=source, checks=[])
-    probe.verify(source, probe.PublicReader(), report)
+    probe.verify(source, probe.PublicReader(), report, expected_mode=expected_mode)
 
 
 def main() -> int:
@@ -382,16 +405,20 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "artifacts/browser")
     parser.add_argument("--browser-channel", default=None)
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--mode", choices=("read-only", "active"), default="read-only")
     parser.add_argument("--sha", help="Exact checked-out source deployed to the canonical Space")
     args = parser.parse_args()
     if args.live != bool(args.sha):
         parser.error("--live and --sha must be supplied together")
+    if args.mode == "active" and not args.live:
+        parser.error("--mode active requires --live and the exact --sha")
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"schema": "szl.seismic.browser-smoke/v1", "evidence_class": "UNKNOWN",
               "started_at": datetime.now(timezone.utc).isoformat(), "checks": [], "passed": False,
               "scope": "Local read-only browser behavior against pinned fixtures; not deployment or scientific validation",
               "source_revision_declared": args.sha or os.environ.get("GITHUB_SHA"), "python": sys.version,
+              "expected_mode": args.mode,
               "frontend_sha256_basis": "Local checkout bytes; live served hashes are recorded in runtime_before and runtime_after",
               "frontend_sha256": {name: file_sha256(ROOT / name) for name in ("frontend/index.html", "frontend/app.js", "frontend/app.css", "frontend/szl/SOURCE.json", "frontend/szl/szl-design-system.css", "frontend/szl/szl-console.css")}}
     if args.live:
@@ -401,13 +428,13 @@ def main() -> int:
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
             if head != args.sha:
                 raise RuntimeError("Live verification requires the exact source checkout")
-            subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "app.py", "frontend", "data", "models", "Dockerfile", "requirements.txt"], cwd=ROOT, check=True, capture_output=True)
+            subprocess.run(["git", "diff", "--exit-code", "HEAD", "--", "app.py", "review_store.py", "frontend", "data", "models", "Dockerfile", "requirements.txt"], cwd=ROOT, check=True, capture_output=True)
             report["runtime_before"] = {}
-            runtime_observation(args.sha, report["runtime_before"])
+            runtime_observation(args.sha, report["runtime_before"], args.mode)
             asyncio.run(smoke(report["application_url"], output, report, live=True,
-                              browser_channel=args.browser_channel))
+                              browser_channel=args.browser_channel, expected_mode=args.mode))
             report["runtime_after"] = {}
-            runtime_observation(args.sha, report["runtime_after"])
+            runtime_observation(args.sha, report["runtime_after"], args.mode)
             if report["runtime_before"] != report["runtime_after"]:
                 raise RuntimeError("Runtime identities changed during the browser checks")
             report.update(passed=True, evidence_class="MEASURED")
@@ -427,10 +454,10 @@ def main() -> int:
                 port_probe.bind(("127.0.0.1", 0))
                 port = port_probe.getsockname()[1]
             base_url = f"http://127.0.0.1:{port}"
-            env = os.environ.copy()
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith("SZL_REVIEW") and key not in ("SPACE_ID", "SZL_SOURCE_REVISION")}
             env.update({"SZL_REVIEW_DB_PATH": str(Path(directory) / "review.sqlite3"),
                         "SZL_REVIEW_WRITE_TOKEN": "", "SZL_REVIEWER_TOKENS_JSON": "{}"})
-            env.pop("SZL_SOURCE_REVISION", None)
             command = [sys.executable, "-m", "uvicorn", "app:app", "--host", "127.0.0.1", "--port", str(port)]
             process = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
             report["health"] = wait_for_server(process, base_url)

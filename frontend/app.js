@@ -26,7 +26,9 @@ function externalLink(value,text){const href=safeLink(value);return href ? `<a h
 async function loadMeta() {
   const meta = await api("/api/meta"); state.meta = meta;
   $("source-state").textContent = `Zenodo ${meta.source_version} · checksum verified`;
-  $("storage-state").textContent = meta.storage_state === "READ_ONLY" ? "Pinned source · read only" : "Local write storage · durability unverified";
+  const remoteStorage=meta.storage_state === "REMOTE_COMMIT_BEFORE_ACK" && meta.write_activation?.mode === "active" && meta.write_activation?.backend === "HF_PRIVATE_DATASET_CAS_V1" && meta.write_activation?.evidence_class === "DECLARED";
+  $("storage-state").textContent = meta.storage_state === "READ_ONLY" ? "Pinned source · read only" : remoteStorage ? "Remote saved state · DECLARED" : "Local write storage · durability unverified";
+  $("storage-explanation").textContent = remoteStorage ? "Successful writes are acknowledged after a private remote state commit and readback. Storage readiness is DECLARED; receipts remain unsigned and do not authenticate waveform sources or establish scientific validity." : "Write availability follows the server configuration. Local storage durability is unverified; receipts do not establish scientific validity.";
   $("write-state").textContent = meta.import_enabled && meta.review_write_enabled ? "Custody + review enabled" : meta.import_enabled ? "Custody enabled" : meta.review_write_enabled ? "Review enabled" : "Read only";
   $("train-count").textContent = meta.model.n_train;
   $("count-auc").textContent = cleanNumber(meta.model.evaluation.roc_auc_oof,3);
@@ -94,10 +96,11 @@ function recordRow(item) {
 }
 
 function catalogueParams(){
-  const imported=state.catalogue==="__imports__";
+  const imported=state.catalogue==="__imports__",published=state.catalogue==="__published__";
   const params=new URLSearchParams();
   if (imported) params.set("origin","imported");
-  if (state.catalogue && !imported) params.set("catalogue",state.catalogue);
+  if (published) params.set("origin","published");
+  if (state.catalogue && !imported && !published) params.set("catalogue",state.catalogue);
   if(state.query)params.set("q",state.query);
   if(state.consensus)params.set("consensus",state.consensus);
   return params;
@@ -171,7 +174,7 @@ async function exportCatalogue(){
 async function loadFilters() {
   const data = await api("/api/detections?origin=published&limit=200&offset=0");
   const catalogues = [...new Set(data.items.filter(x => x.origin === "PUBLISHED_PANEL").map(x => x.catalogue))].sort();
-  $("catalogue-filter").innerHTML = `<option value="">All catalogues</option><option value="__imports__">Imported cases</option>` + catalogues.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+  $("catalogue-filter").innerHTML = `<option value="">All catalogues</option><option value="__published__">Published panel</option><option value="__imports__">Imported cases</option>` + catalogues.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
 }
 
 function invalidateCustody(message="Enter the source custodian token, then load custody records."){
