@@ -291,6 +291,49 @@ async def workflow(base_url, output, report, credentials, csv_bytes, waveforms, 
                 finally:
                     page.remove_listener("request", track_custody)
 
+            with check(report, "Untraced reviewer cases show no custodian upload controls", fixture=DATA_CLASS):
+                before = await receipt_state(context, base_url, custodian, 1)
+                identifier = case_ids[EVENTS[0]]
+                await page.locator(f'[data-custody-record="{identifier}"]').click()
+                await expect(page.locator("#waveform-file")).to_be_visible()
+                await expect(page.locator("#attach-waveform")).to_be_visible()
+                await page.locator("#close-drawer").click()
+                await page.locator("#operator-token").fill("")
+                blind = await open_reviewer(page, identifier, reviewer_a)
+                assert blind["blind"] is True and blind["waveform"] is None
+                await expect(page.locator("#waveform-file")).to_have_count(0)
+                await expect(page.locator("#attach-waveform")).to_have_count(0)
+                await expect(page.locator("#detail-content")).to_contain_text(
+                    "Waiting for the source custodian to attach five station traces.")
+                await expect(page.locator("[data-verdict]")).to_have_count(0)
+                await screenshot(page, output, "SAMPLE-reviewer-awaiting-waveforms.png")
+                await open_reviewer(page, identifier, custodian)
+                await expect(page.locator("#waveform-file")).to_have_count(0)
+                await expect(page.locator("#attach-waveform")).to_have_count(0)
+                await expect(page.locator("#detail-content")).to_contain_text(
+                    "Enter this custodian credential in Source custodian token under Operator tools")
+                await page.locator("#reviewer-token").fill("")
+                await page.locator("#close-drawer").click()
+                await page.locator("#operator-token").fill(reviewer_a)
+                await page.locator(f'[data-record="{identifier}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                await expect(page.locator("#waveform-file")).to_have_count(0)
+                await expect(page.locator("#attach-waveform")).to_have_count(0)
+                await expect(page.locator("#detail-content")).to_contain_text(
+                    "Waiting for the source custodian to attach five station traces.")
+                await expect(page.locator("#detail-content")).not_to_contain_text(EVENTS[0])
+                await page.locator("#close-drawer").click()
+                await page.locator("#operator-token").fill(custodian)
+                await page.locator(f'[data-record="{identifier}"]').click()
+                await expect(page.locator("#waveform-file")).to_be_visible()
+                await expect(page.locator("#attach-waveform")).to_be_visible()
+                await page.locator("#close-drawer").click()
+                async with page.expect_response(lambda r: urlsplit(r.url).path == "/api/custody/detections") as pending:
+                    await page.locator("#custody-load").click()
+                assert (await pending.value).ok
+                await expect(page.locator("#custody-results")).to_have_attribute("aria-busy", "false")
+                assert await receipt_state(context, base_url, custodian, 1) == before
+
             with check(report, "Each mapped case receives its intended distinct five-station traces", fixture=DATA_CLASS):
                 for ordinal, event in enumerate(EVENTS):
                     identifier = case_ids[event]
@@ -330,6 +373,16 @@ async def workflow(base_url, output, report, credentials, csv_bytes, waveforms, 
                 await api(context, base_url, "POST", import_path, token=custodian, body=csv_bytes, expected=409)
                 await api(context, base_url, "POST", f"/api/detections/{quote(identifier)}/waveform",
                           token=custodian, body=waveforms[EVENTS[1]], expected=409)
+                assert await receipt_state(context, base_url, custodian, 3) == before
+
+            with check(report, "Custodian credential in reviewer field cannot expose verdict controls", fixture=DATA_CLASS):
+                await page.locator("#operator-token").fill("")
+                blind = await open_reviewer(page, identifier, custodian)
+                assert blind["blind"] is True and blind["waveform"] is not None
+                await expect(page.locator("[data-verdict]")).to_have_count(0)
+                await expect(page.locator("#detail-content")).to_contain_text(
+                    "Reviewer verdicts require a separate reviewer credential")
+                await page.locator("#close-drawer").click()
                 assert await receipt_state(context, base_url, custodian, 3) == before
 
             with check(report, "Reviewer A is blind until an actual UI verdict locks and reveals only A", fixture=DATA_CLASS):

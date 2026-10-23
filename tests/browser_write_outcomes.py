@@ -33,6 +33,18 @@ WAVEFORM = {"source_uri": "urn:simulated:browser-test", "sample_rate_hz": 20,
             "stations": [{"index": index, "samples": [0, 1, -1, 0]} for index in range(5)]}
 
 
+async def simulated_access(route):
+    authorization = route.request.headers.get("authorization")
+    for role, token in (("custodian", DUMMY_CUSTODIAN), ("reviewer", DUMMY_REVIEWER)):
+        for suffix in ("", "-SECOND", "-THIRD"):
+            if authorization == "Bearer " + token + suffix:
+                await route.fulfill(json={"identity": "SIMULATED-" + role + suffix,
+                                          "role": role, "evidence_class": "DECLARED",
+                                          "receipt_minted": False})
+                return
+    await route.fulfill(status=401, json={"detail": "SIMULATED credential rejected"})
+
+
 def card(kind: str) -> dict:
     return {"id": CASE_ID, "event_id": None, "catalogue": "Blind import",
             "region": "Undisclosed during review", "origin": "OPERATOR_IMPORT",
@@ -55,6 +67,9 @@ async def scenario(context, base_url: str, output: Path, report: dict, kind: str
     async def intercept(route):
         request = route.request
         path = unquote(urlsplit(request.url).path)
+        if path == "/api/access":
+            await simulated_access(route)
+            return
         if request.method == "POST":
             state["post_count"] += 1
             expected = {"review": "/api/reviews", "waveform": f"/api/detections/{CASE_ID}/waveform", "import": "/api/catalogues/import"}[kind]
@@ -192,6 +207,9 @@ async def ambiguous_post_scenario(context, base_url: str, output: Path,
     async def intercept(route):
         request = route.request
         path = unquote(urlsplit(request.url).path)
+        if path == "/api/access":
+            await simulated_access(route)
+            return
         if request.method == "POST":
             state["post_count"] += 1
             expected = {"review": "/api/reviews", "waveform": f"/api/detections/{CASE_ID}/waveform",
@@ -296,6 +314,9 @@ async def credential_session_scenario(context, base_url: str, output: Path,
     async def intercept(route):
         request = route.request
         path = unquote(urlsplit(request.url).path)
+        if path == "/api/access":
+            await simulated_access(route)
+            return
         if request.method == "POST":
             state["post_count"] += 1
             expected = {"review": "/api/reviews", "waveform": f"/api/detections/{CASE_ID}/waveform",
@@ -495,6 +516,81 @@ async def credential_session_scenario(context, base_url: str, output: Path,
         await page.close()
 
 
+async def access_confirmation_scenario(context, base_url: str, output: Path,
+                                       report: dict, outcome: str) -> None:
+    """A missing or stale server role cannot render a privileged control."""
+    name = "access-confirmation-" + outcome
+    page = await context.new_page()
+    page_errors, posts = [], []
+    started, release = asyncio.Event(), asyncio.Event()
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+
+    async def intercept(route):
+        request = route.request
+        path = unquote(urlsplit(request.url).path)
+        if request.method == "POST":
+            posts.append(path)
+            await route.abort("blockedbyclient")
+        elif path == "/api/access":
+            if outcome == "null":
+                await route.fulfill(content_type="application/json", body="null")
+            elif outcome == "denied":
+                await route.fulfill(status=401, json={"detail": "SIMULATED role unavailable"})
+            elif request.headers.get("authorization") == "Bearer " + DUMMY_CUSTODIAN:
+                started.set()
+                await asyncio.wait_for(release.wait(), timeout=15)
+                await simulated_access(route)
+            else:
+                await simulated_access(route)
+        elif path == "/api/meta":
+            response = await route.fetch()
+            meta = await response.json()
+            meta.update(import_enabled=True, review_write_enabled=True,
+                        storage_state="LOCAL_FILE_UNVERIFIED_DURABILITY")
+            await route.fulfill(response=response, json=meta)
+        elif path == "/api/detections":
+            await route.fulfill(json={"total": 1, "items": [card("waveform")], "offset": 0, "limit": 20})
+        elif path == f"/api/detections/{CASE_ID}":
+            await route.fulfill(json={**card("waveform"), "blind": True,
+                                      "waveform": None, "waveform_sha256": None})
+        else:
+            await route.continue_()
+
+    await page.route(f"{base_url}/api/**", intercept)
+    try:
+        with check(report, name, fixture="SIMULATED_ACCESS_CONFIRMATION"):
+            await page.goto(base_url, wait_until="domcontentloaded")
+            await ready(page)
+            await page.locator("#operator-token").fill(DUMMY_CUSTODIAN)
+            await page.locator(f'[data-record="{CASE_ID}"]').click()
+            if outcome == "credential-change":
+                await asyncio.wait_for(started.wait(), timeout=5)
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "true")
+                await expect(page.locator("#attach-waveform")).to_have_count(0)
+                await page.locator("#close-drawer").click()
+                await page.locator("#operator-token").fill(DUMMY_REVIEWER)
+                await page.locator(f'[data-record="{CASE_ID}"]').click()
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                release.set()
+                await page.wait_for_load_state("networkidle")
+                await expect(page.locator("#detail-content")).to_contain_text(
+                    "Waiting for the source custodian to attach five station traces.")
+                await expect(page.locator("#detail-content")).not_to_contain_text("Source custody")
+            else:
+                await expect(page.locator("#detail-content")).to_have_attribute("aria-busy", "false")
+                await expect(page.locator("#detail-content")).to_contain_text("Could not load record")
+            await expect(page.locator("#waveform-file")).to_have_count(0)
+            await expect(page.locator("#attach-waveform")).to_have_count(0)
+            await expect(page.locator("[data-verdict]")).to_have_count(0)
+            assert not posts and not page_errors
+            await page.screenshot(path=str(output / f"{name}.png"), full_page=True, animations="disabled")
+            report["scenarios"].append({"name": name, "post_count": 0,
+                                        "all_posts_intercepted": True})
+    finally:
+        release.set()
+        await page.close()
+
+
 async def run_browser(base_url: str, output: Path, report: dict, channel: str | None) -> None:
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(**({"channel": channel} if channel else {}))
@@ -502,6 +598,8 @@ async def run_browser(base_url: str, output: Path, report: dict, channel: str | 
         try:
             context = await browser.new_context(viewport={"width": 1440, "height": 1000})
             context.set_default_timeout(15_000)
+            for outcome in ("null", "denied", "credential-change"):
+                await access_confirmation_scenario(context, base_url, output, report, outcome)
             for kind in ("review", "waveform", "import"):
                 await scenario(context, base_url, output, report, kind)
                 await scenario(context, base_url, output, report, kind, failed_post=True)
