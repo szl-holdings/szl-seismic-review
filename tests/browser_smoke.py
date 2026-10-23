@@ -98,6 +98,7 @@ async def select_published_scope(page, expected_mode):
     if expected_mode == "active":
         return await wait_query(page, lambda: page.locator("#catalogue-filter").select_option("__published__"),
                                 origin="published", offset=0)
+    return None
 
 
 async def smoke(base_url: str, output: Path, report: dict, *, live: bool = False,

@@ -191,10 +191,12 @@ def test_entity_and_receipt_acknowledged_only_after_exact_revision_readback():
 def test_application_failure_rolls_back_entity_and_receipt_without_publish():
     driver = FakeDriver()
     parent = driver.head
+    fail_after_write = Mock(side_effect=ValueError("SAMPLE-abort"))
     with pytest.raises(ValueError, match="SAMPLE-abort"):
         with storage.SnapshotStore(driver).transaction() as db:
             add_detection(db)
-            raise ValueError("SAMPLE-abort")
+            fail_after_write()
+    fail_after_write.assert_called_once()
     assert driver.head == parent
     assert driver.publishes == []
     assert contents(driver) == ([], [])

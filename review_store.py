@@ -277,7 +277,7 @@ class SnapshotStore:
                         if observed == payload and head == manifest:
                             return
                     except StorageError:
-                        pass
+                        raise StorageUncertain("remote commit outcome unknown; inspect receipts before retrying") from None
                     raise StorageUncertain("remote commit outcome unknown; inspect receipts before retrying") from None
                 try:
                     _, observed, head, check = self._read(committed)
