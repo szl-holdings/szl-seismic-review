@@ -216,7 +216,13 @@ class HubDriver:
             if error.response is not None and error.response.status_code == 412:
                 raise StorageConflict("state changed; reload before retrying") from None
             raise StorageUncertain("remote commit outcome unknown; inspect receipts before retrying") from None
-        except Exception:
+        except Exception as error:
+            # huggingface_hub 2.x delegates transport errors to httpx2 and
+            # raises HTTPStatusError instead of HfHubHTTPError. Preserve the
+            # same fail-closed CAS classification across both SDK families.
+            response = getattr(error, "response", None)
+            if getattr(response, "status_code", None) == 412:
+                raise StorageConflict("state changed; reload before retrying") from None
             raise StorageUncertain("remote commit outcome unknown; inspect receipts before retrying") from None
 
 
