@@ -186,3 +186,5 @@ The generated file is ignored by Git. A local build without a matching `SZL_SOUR
 ## Attribution and licenses
 
 Project code and original UI are Apache-2.0 under [LICENSE](LICENSE). The derived panel and verdict CSVs in `data/` are attributed to Lingsen Meng, Hui Huang, Jinzhi Ma, and Yang Ma under the source deposition's **CC BY 4.0** terms; see [data/SOURCE_LICENSE.md](data/SOURCE_LICENSE.md) and the source manifest. The study is a preprint and its authors' performance figures are not SZL validation results.
+
+Estate on Hugging Face: models, datasets and Spaces are published under the [SZLHOLDINGS](https://huggingface.co/SZLHOLDINGS) org.
