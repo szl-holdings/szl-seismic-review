@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "szl-seismic-review"
+version = "0.1.0"
+description = "Evidence-bound seismic catalogue review pilot with blinded human review and calibrated Japan-panel research baseline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [{ name = "Stephen Lutar", email = "stephen@szlholdings.com" }]
+dependencies = ["fastapi==0.162.0", "uvicorn==0.54.0", "huggingface-hub==2.4.0"]
+
+[project.urls]
+Homepage = "https://a-11-oy.com"
+Repository = "https://github.com/szl-holdings/szl-seismic-review"
+
+[tool.setuptools]
+py-modules = ["app", "review_store"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build", "dist", ".venv", "node_modules"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
