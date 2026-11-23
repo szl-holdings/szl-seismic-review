@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [{ name = "Stephen Lutar", email = "stephen@szlholdings.com" }]
-dependencies = ["fastapi==0.162.5", "uvicorn==0.54.0", "huggingface-hub==2.4.0"]
+dependencies = ["fastapi==0.165.0", "uvicorn==0.54.0", "huggingface-hub==2.4.0"]
 
 [project.urls]
 Homepage = "https://a-11-oy.com"
